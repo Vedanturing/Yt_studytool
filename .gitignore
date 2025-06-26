@@ -1,0 +1,44 @@
+# Node.js
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.env.*
+venv/
+env/
+backend/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Misc
+*.bak
+*.tmp
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Test output
+*.pytest_cache/
+
+# Exported files
+*.xlsx
+*.pdf 

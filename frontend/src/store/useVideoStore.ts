@@ -1,25 +1,79 @@
 import { create } from 'zustand';
 import axios from 'axios';
-import { VideoStore, VideoResponse, SortOption, TranscribeResponse, SummarizeResponse } from '../types';
+import { VideoStore, VideoResponse, SortOption, DurationFilter, ContentTypeFilter, Theme, TabType, TranscribeResponse, SummarizeResponse, LearningModeState, LearningModeResponse } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
-// Memoized sorting function
+// Helper function to get duration category
+const getDurationCategory = (duration?: number): string => {
+  if (!duration) return 'unknown';
+  if (duration < 240) return 'short'; // <4 minutes
+  if (duration < 1200) return 'medium'; // 4-20 minutes
+  return 'long'; // >20 minutes
+};
+
+// Helper function to determine content type based on duration and title
+const getContentType = (video: any): string => {
+  const title = video.title?.toLowerCase() || '';
+  const duration = video.duration || 0;
+  
+  if (duration < 60 || title.includes('#shorts') || title.includes('short')) return 'shorts';
+  return 'videos';
+};
+
+// Enhanced filtering function
+const filterVideos = (videos: any[], filters: any): any[] => {
+  return videos.filter(video => {
+    // Duration filter
+    if (filters.durationFilter !== 'all') {
+      const category = getDurationCategory(video.duration);
+      if (category !== filters.durationFilter) return false;
+    }
+    
+    // Content type filter
+    if (filters.contentTypeFilter !== 'all') {
+      const type = getContentType(video);
+      if (type !== filters.contentTypeFilter) return false;
+    }
+    
+    return true;
+  });
+};
+
+// Memoized sorting function with better performance
 const sortVideos = (videos: any[], sortBy: SortOption): any[] => {
-  const sortedVideos = [...videos]; // Clone the array
+  if (!videos || videos.length === 0) return [];
+  
+  // Clone the array to avoid mutating the original
+  const sortedVideos = [...videos];
   
   switch (sortBy) {
     case 'views':
-      return sortedVideos.sort((a, b) => b.views - a.views);
+      return sortedVideos.sort((a, b) => {
+        const viewsA = typeof a.views === 'number' ? a.views : 0;
+        const viewsB = typeof b.views === 'number' ? b.views : 0;
+        return viewsB - viewsA;
+      });
     case 'likes':
-      return sortedVideos.sort((a, b) => b.likes - a.likes);
+      return sortedVideos.sort((a, b) => {
+        const likesA = typeof a.likes === 'number' ? a.likes : 0;
+        const likesB = typeof b.likes === 'number' ? b.likes : 0;
+        return likesB - likesA;
+      });
     case 'date':
-      // Sort by published date if available, otherwise keep original order
       return sortedVideos.sort((a, b) => {
         if (a.published_date && b.published_date) {
-          return new Date(b.published_date).getTime() - new Date(a.published_date).getTime();
+          const dateA = new Date(a.published_date).getTime();
+          const dateB = new Date(b.published_date).getTime();
+          return dateB - dateA; // Newest first
         }
         return 0;
+      });
+    case 'duration':
+      return sortedVideos.sort((a, b) => {
+        const durationA = typeof a.duration === 'number' ? a.duration : 0;
+        const durationB = typeof b.duration === 'number' ? b.duration : 0;
+        return durationB - durationA; // Longest first
       });
     case 'relevance':
     default:
@@ -28,16 +82,42 @@ const sortVideos = (videos: any[], sortBy: SortOption): any[] => {
   }
 };
 
+// Pagination function
+const paginateVideos = (videos: any[], currentPage: number, itemsPerPage: number): any[] => {
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  return videos.slice(startIndex, endIndex);
+};
+
+// Helper function to extract filename from content-disposition header
+const getFilenameFromResponse = (response: any, defaultName: string): string => {
+  const contentDisposition = response.headers['content-disposition'];
+  if (contentDisposition) {
+    const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (filenameMatch && filenameMatch[1]) {
+      return filenameMatch[1].replace(/['"]/g, '');
+    }
+  }
+  return defaultName;
+};
+
 export const useVideoStore = create<VideoStore>((set, get) => ({
   keyword: '',
   loading: false,
   videos: [],
   filteredVideos: [],
+  paginatedVideos: [],
   error: null,
   totalCount: 0,
   source: '',
+  theme: 'system',
+  activeTab: 'overview',
   filterState: {
-    sortBy: 'relevance'
+    sortBy: 'relevance',
+    durationFilter: 'all',
+    contentTypeFilter: 'all',
+    currentPage: 1,
+    itemsPerPage: 12
   },
   transcriptionState: {
     transcription: '',
@@ -49,6 +129,16 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     transcriptionError: null,
     summarizationError: null,
   },
+  learningModeState: {
+    flashcards: [],
+    currentCardIndex: 0,
+    showAnswer: false,
+    cardProgress: {},
+    isGenerating: false,
+    error: null,
+    video_title: '',
+    video_id: '',
+  },
 
   setKeyword: (keyword: string) => {
     set({ keyword });
@@ -58,21 +148,36 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     set({ loading });
   },
 
+  setTheme: (theme: Theme) => {
+    set({ theme });
+  },
+
+  setActiveTab: (activeTab: TabType) => {
+    set({ activeTab });
+  },
+
   setResults: (response: VideoResponse) => {
     const { filterState } = get();
-    const sortedVideos = sortVideos(response.videos, filterState.sortBy);
+    
+    // Apply filters and sorting
+    const filtered = filterVideos(response.videos, filterState);
+    const sorted = sortVideos(filtered, filterState.sortBy);
+    const paginated = paginateVideos(sorted, filterState.currentPage, filterState.itemsPerPage);
     
     set({
       videos: response.videos,
-      filteredVideos: sortedVideos,
+      filteredVideos: sorted,
+      paginatedVideos: paginated,
       totalCount: response.total_count,
       source: response.source,
+      keyword: response.keyword,
       error: null,
+      filterState: { ...filterState, currentPage: 1 } // Reset to first page
     });
   },
 
   setError: (error: string) => {
-    set({ error, videos: [], filteredVideos: [], totalCount: 0, source: '' });
+    set({ error, videos: [], filteredVideos: [], paginatedVideos: [], totalCount: 0, source: '' });
   },
 
   clearError: () => {
@@ -80,12 +185,57 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   },
 
   setSortBy: (sortBy: SortOption) => {
-    const { videos } = get();
-    const sortedVideos = sortVideos(videos, sortBy);
+    const { videos, filterState } = get();
+    
+    // Apply filters and sorting
+    const filtered = filterVideos(videos, { ...filterState, sortBy });
+    const sorted = sortVideos(filtered, sortBy);
+    const paginated = paginateVideos(sorted, 1, filterState.itemsPerPage);
     
     set({
-      filterState: { sortBy },
-      filteredVideos: sortedVideos
+      filterState: { ...filterState, sortBy, currentPage: 1 },
+      filteredVideos: sorted,
+      paginatedVideos: paginated
+    });
+  },
+
+  setDurationFilter: (durationFilter: DurationFilter) => {
+    const { videos, filterState } = get();
+    
+    // Apply filters and sorting
+    const filtered = filterVideos(videos, { ...filterState, durationFilter });
+    const sorted = sortVideos(filtered, filterState.sortBy);
+    const paginated = paginateVideos(sorted, 1, filterState.itemsPerPage);
+    
+    set({
+      filterState: { ...filterState, durationFilter, currentPage: 1 },
+      filteredVideos: sorted,
+      paginatedVideos: paginated
+    });
+  },
+
+  setContentTypeFilter: (contentTypeFilter: ContentTypeFilter) => {
+    const { videos, filterState } = get();
+    
+    // Apply filters and sorting
+    const filtered = filterVideos(videos, { ...filterState, contentTypeFilter });
+    const sorted = sortVideos(filtered, filterState.sortBy);
+    const paginated = paginateVideos(sorted, 1, filterState.itemsPerPage);
+    
+    set({
+      filterState: { ...filterState, contentTypeFilter, currentPage: 1 },
+      filteredVideos: sorted,
+      paginatedVideos: paginated
+    });
+  },
+
+  setCurrentPage: (currentPage: number) => {
+    const { filteredVideos, filterState } = get();
+    const paginated = paginateVideos(filteredVideos, currentPage, filterState.itemsPerPage);
+    
+    set({
+      filterState: { ...filterState, currentPage },
+      paginatedVideos: paginated
     });
   },
 
@@ -138,10 +288,16 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   },
 
   exportToExcel: async (videos: any[]) => {
+    if (!videos || videos.length === 0) {
+      alert('No videos to export');
+      return;
+    }
+
     try {
+      const { keyword } = get();
       const response = await axios.post(
         `${API_BASE_URL}/export/excel`,
-        { videos },
+        { videos, keyword },
         {
           responseType: 'blob',
           headers: {
@@ -150,10 +306,11 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         }
       );
 
+      const filename = getFilenameFromResponse(response, 'yt_results.xlsx');
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1] || 'yt_results.xlsx');
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -165,10 +322,16 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
   },
 
   exportToPdf: async (videos: any[]) => {
+    if (!videos || videos.length === 0) {
+      alert('No videos to export');
+      return;
+    }
+
     try {
+      const { keyword } = get();
       const response = await axios.post(
         `${API_BASE_URL}/export/pdf`,
-        { videos },
+        { videos, keyword },
         {
           responseType: 'blob',
           headers: {
@@ -177,10 +340,11 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         }
       );
 
+      const filename = getFilenameFromResponse(response, 'yt_results.pdf');
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1] || 'yt_results.pdf');
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -331,11 +495,11 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         }
       );
 
+      const filename = getFilenameFromResponse(response, `transcript.${format}`);
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      const extension = format === 'pdf' ? 'pdf' : 'txt';
-      link.setAttribute('download', response.headers['content-disposition']?.split('filename=')[1] || `transcript.${extension}`);
+      link.setAttribute('download', filename);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -344,5 +508,118 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
       console.error('Error exporting transcript:', error);
       alert(`Failed to export transcript as ${format.toUpperCase()}. Please try again.`);
     }
+  },
+
+  // Learning Mode Functions
+  generateLearningMode: async (videoUrl: string) => {
+    set({
+      learningModeState: {
+        ...get().learningModeState,
+        isGenerating: true,
+        error: null,
+      }
+    });
+
+    try {
+      const encodedUrl = encodeURIComponent(videoUrl);
+      const response = await axios.post<LearningModeResponse>(
+        `${API_BASE_URL}/learning_mode/${encodedUrl}`,
+        {},
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: 300000, // 5 minute timeout for learning mode generation
+        }
+      );
+
+      set({
+        learningModeState: {
+          flashcards: response.data.flashcards,
+          currentCardIndex: 0,
+          showAnswer: false,
+          cardProgress: {},
+          isGenerating: false,
+          error: null,
+          video_title: response.data.video_title,
+          video_id: response.data.video_id,
+        }
+      });
+    } catch (error) {
+      console.error('Error generating learning mode:', error);
+      let errorMessage = 'Failed to generate learning mode. Please try again.';
+      
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message;
+      }
+
+      set({
+        learningModeState: {
+          ...get().learningModeState,
+          isGenerating: false,
+          error: errorMessage,
+        }
+      });
+    }
+  },
+
+  setCurrentCard: (index: number) => {
+    const { learningModeState } = get();
+    if (index >= 0 && index < learningModeState.flashcards.length) {
+      set({
+        learningModeState: {
+          ...learningModeState,
+          currentCardIndex: index,
+          showAnswer: false,
+        }
+      });
+    }
+  },
+
+  toggleAnswer: () => {
+    const { learningModeState } = get();
+    set({
+      learningModeState: {
+        ...learningModeState,
+        showAnswer: !learningModeState.showAnswer,
+      }
+    });
+  },
+
+  rateCard: (rating: 'known' | 'difficult') => {
+    const { learningModeState } = get();
+    const currentIndex = learningModeState.currentCardIndex;
+    
+    set({
+      learningModeState: {
+        ...learningModeState,
+        cardProgress: {
+          ...learningModeState.cardProgress,
+          [currentIndex]: rating,
+        }
+      }
+    });
+
+    // Auto-advance to next card if not the last one
+    if (currentIndex < learningModeState.flashcards.length - 1) {
+      setTimeout(() => {
+        get().setCurrentCard(currentIndex + 1);
+      }, 500);
+    }
+  },
+
+  resetLearningMode: () => {
+    set({
+      learningModeState: {
+        flashcards: [],
+        currentCardIndex: 0,
+        showAnswer: false,
+        cardProgress: {},
+        isGenerating: false,
+        error: null,
+        video_title: '',
+        video_id: '',
+      }
+    });
   },
 })); 

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Video } from '../types';
 import { TranscriptionModal } from './TranscriptionModal';
+import { useVideoStore } from '../store/useVideoStore';
 
 interface VideoCardProps {
   video: Video;
@@ -11,6 +12,7 @@ interface VideoCardProps {
 const VideoCard: React.FC<VideoCardProps> = ({ video, index }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const { generateLearningMode, learningModeState, setActiveTab } = useVideoStore();
 
   const formatNumber = (num: number): string => {
     if (num >= 1000000) {
@@ -42,6 +44,15 @@ const VideoCard: React.FC<VideoCardProps> = ({ video, index }) => {
 
   const handleImageError = () => {
     setImageError(true);
+  };
+
+  const handleLearningMode = async () => {
+    try {
+      await generateLearningMode(video.video_url);
+      setActiveTab('learning'); // Switch to learning tab
+    } catch (error) {
+      console.error('Failed to generate learning mode:', error);
+    }
   };
 
   return (
@@ -177,17 +188,26 @@ const VideoCard: React.FC<VideoCardProps> = ({ video, index }) => {
               href={video.video_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex-1 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 text-center"
+              className="flex-1 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 text-center"
             >
-              🎬 Watch Video
+              🎬 Watch
             </motion.a>
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => setIsModalOpen(true)}
-              className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+              className="bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200"
             >
               🎯 Transcribe
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleLearningMode}
+              disabled={learningModeState.isGenerating}
+              className="bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 disabled:from-gray-400 disabled:to-gray-500 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 disabled:cursor-not-allowed"
+            >
+              {learningModeState.isGenerating ? '⏳' : '🧠'} Learn
             </motion.button>
           </div>
         </div>

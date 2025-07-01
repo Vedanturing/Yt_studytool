@@ -35,10 +35,11 @@ try:
     import whisper
     import openai
     from transformers import pipeline
+    import google.generativeai as genai
     AI_AVAILABLE = True
 except ImportError:
     AI_AVAILABLE = False
-    print("Warning: AI libraries not available. Install whisper, openai, and transformers for transcription/summarization.")
+    print("Warning: AI libraries not available. Install whisper, openai, transformers, and google-generativeai for AI functionality.")
 
 # Load environment variables
 load_dotenv()
@@ -115,15 +116,22 @@ def get_summarizer():
             model_name = os.getenv("SUMMARIZATION_MODEL", "t5-small")
             logger.info(f"Loading summarization model ({model_name})...")
             
-            if model_name.lower() == "openai":
-                # Use OpenAI API if specified
+            # Try Gemini first as primary
+            if model_name.lower() in ["gemini", "openai"]:
+                gemini_api_key = os.getenv("GEMINI_API_KEY")
+                if gemini_api_key:
+                    logger.info("Using Gemini API as primary summarization model")
+                    return "gemini"
+                
+                # Try OpenAI as fallback
                 openai_api_key = os.getenv("OPENAI_API_KEY")
-                if not openai_api_key:
-                    logger.warning("OpenAI API key not found, falling back to t5-small")
-                    model_name = "t5-small"
-                else:
-                    # Return a special flag to use OpenAI API
+                if openai_api_key:
+                    logger.info("Using OpenAI API as fallback")
                     return "openai"
+                
+                # If neither API key is available
+                logger.warning("Both Gemini and OpenAI API keys not found, falling back to t5-small")
+                model_name = "t5-small"
             
             summarizer = pipeline("summarization", model=model_name, device=-1)
             logger.info("Summarization model loaded successfully")
@@ -153,6 +161,17 @@ class SummarizeResponse(BaseModel):
     original_length: int
     summary_length: int
 
+class Flashcard(BaseModel):
+    question: str
+    answer: str
+    type: str  # 'mcq' or 'fact'
+
+class LearningModeResponse(BaseModel):
+    video_id: str
+    video_title: str
+    flashcards: List[Flashcard]
+    total_cards: int
+
 class Comment(BaseModel):
     text: str
     author: str
@@ -167,6 +186,7 @@ class Video(BaseModel):
     comment_count: int
     top_comments: List[Comment]
     thumbnail_url: str = ""
+    duration: Optional[float] = None  # Duration in seconds
 
 class VideoResponse(BaseModel):
     videos: List[Video]
@@ -176,6 +196,7 @@ class VideoResponse(BaseModel):
 
 class ExportRequest(BaseModel):
     videos: List[Video]
+    keyword: Optional[str] = ""
 
 class ErrorResponse(BaseModel):
     error: str
@@ -320,79 +341,221 @@ def download_audio(video_url: str, output_dir: str) -> tuple[str, str, float]:
     """Download audio from YouTube video using yt-dlp"""
     try:
         video_id = extract_video_id(video_url)
-        output_path = os.path.join(output_dir, f"{video_id}.%(ext)s")
         
-        # yt-dlp command to extract audio only
+        title = "Unknown Title"
+        duration = 0.0
+        
+        # Use the exact same approach that worked in our test
+        logger.info("Downloading audio using working approach...")
+        output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
+        
         cmd = [
             "yt-dlp",
-            "--extract-audio",
-            "--audio-format", "m4a",
-            "--audio-quality", "0",  # Best quality
-            "--output", output_path,
+            "--format", "bestaudio",
+            "--output", output_template,
             "--no-playlist",
-            "--print", "title",
-            "--print", "duration",
-            "--print", "filename",
+            "--quiet",
             video_url
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         
-        # Debug: print yt-dlp output
-        logger.info(f"yt-dlp stdout:\n{result.stdout}")
-        logger.info(f"yt-dlp stderr:\n{result.stderr}")
-        logger.info(f"Files in temp dir after yt-dlp: {os.listdir(output_dir)}")
+        logger.info(f"Download - Return code: {result.returncode}")
+        if result.stdout:
+            logger.info(f"Download - stdout: {result.stdout}")
+        if result.stderr:
+            logger.info(f"Download - stderr: {result.stderr}")
         
+        # Get metadata separately to avoid mixing with download output
+        logger.info("Getting video metadata...")
+        cmd_meta = [
+            "yt-dlp",
+            "--simulate",
+            "--print", "%(title)s",
+            "--print", "%(duration)s",
+            video_url
+        ]
+        
+        meta_result = subprocess.run(cmd_meta, capture_output=True, text=True, timeout=60)
+        
+        if meta_result.returncode == 0 and meta_result.stdout.strip():
+            meta_lines = meta_result.stdout.strip().split('\n')
+            if len(meta_lines) >= 1:
+                title = meta_lines[0] or "Unknown Title"
+            if len(meta_lines) >= 2:
+                try:
+                    duration = float(meta_lines[1]) if meta_lines[1] and meta_lines[1].replace('.', '').isdigit() else 0.0
+                except:
+                    duration = 0.0
+            
+            logger.info(f"Metadata - Title: {title}, Duration: {duration}")
+        
+        # If first attempt failed, try alternatives
         if result.returncode != 0:
-            raise Exception(f"yt-dlp failed: {result.stderr}")
+            logger.info("First download failed, trying alternative formats...")
+            
+            # Try worst quality
+            cmd_worst = [
+                "yt-dlp",
+                "--format", "worst",
+                "--output", output_template,
+                "--no-playlist",
+                "--quiet",
+                video_url
+            ]
+            
+            result = subprocess.run(cmd_worst, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                # Try any format
+                cmd_any = [
+                    "yt-dlp",
+                    "--output", output_template,
+                    "--no-playlist",
+                    "--quiet",
+                    video_url
+                ]
+                
+                result = subprocess.run(cmd_any, capture_output=True, text=True, timeout=300)
         
-        # Parse output to get title, duration, and filename
-        output_lines = result.stdout.strip().split('\n')
-        title = output_lines[0] if output_lines else "Unknown Title"
-        duration = float(output_lines[1]) if len(output_lines) > 1 and output_lines[1].replace('.', '').isdigit() else 0.0
-        filename = output_lines[2] if len(output_lines) > 2 else None
+        # Find the downloaded file
+        audio_file = None
         
-        # Find the downloaded audio file
-        if filename and os.path.exists(filename):
-            audio_file = filename
-        else:
-            # Try to find the file by video ID and common audio extensions
-            for ext in ['m4a', 'mp3', 'wav', 'webm']:
-                potential_file = os.path.join(output_dir, f"{video_id}.{ext}")
-                if os.path.exists(potential_file):
-                    audio_file = potential_file
+        try:
+            files = os.listdir(output_dir)
+            logger.info(f"Files in directory after download: {files}")
+            
+            # Look for files with the video ID first
+            for file in files:
+                if video_id in file:
+                    audio_file = os.path.join(output_dir, file)
+                    logger.info(f"Found file with video ID: {file}")
                     break
-            else:
-                # Search for any file containing the video ID
-                for file in os.listdir(output_dir):
-                    if video_id in file and any(file.endswith(ext) for ext in ['.m4a', '.mp3', '.wav', '.webm']):
+            
+            # If no file with video ID, look for any media file
+            if not audio_file:
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in ['.webm', '.m4a', '.mp3', '.wav', '.ogg', '.mp4', '.mkv', '.aac', '.flv']):
                         audio_file = os.path.join(output_dir, file)
+                        logger.info(f"Found media file: {file}")
                         break
-                else:
-                    # Last resort: find any audio file in the directory
-                    for file in os.listdir(output_dir):
-                        if any(file.endswith(ext) for ext in ['.m4a', '.mp3', '.wav', '.webm']):
-                            audio_file = os.path.join(output_dir, file)
-                            break
-                    else:
-                        raise Exception("Audio file not found after download")
+            
+            # Last resort: take any file in the directory
+            if not audio_file and files:
+                audio_file = os.path.join(output_dir, files[0])
+                logger.info(f"Using first available file: {files[0]}")
+                
+        except Exception as e:
+            logger.error(f"Error listing directory: {e}")
+        
+        if not audio_file or not os.path.exists(audio_file):
+            # Final attempt with verbose output to debug
+            logger.error("No files found. Attempting download with verbose output...")
+            cmd_verbose = [
+                "yt-dlp",
+                "--format", "bestaudio",
+                "--output", output_template,
+                "--no-playlist",
+                "-v",  # Verbose output
+                video_url
+            ]
+            
+            verbose_result = subprocess.run(cmd_verbose, capture_output=True, text=True, timeout=300)
+            logger.error(f"Verbose download output: {verbose_result.stdout}")
+            logger.error(f"Verbose download errors: {verbose_result.stderr}")
+            
+            raise Exception("No audio file found after download attempts. YouTube may be blocking requests or the video may not be available.")
+        
+        # Verify file is not empty
+        file_size = os.path.getsize(audio_file)
+        if file_size == 0:
+            raise Exception("Downloaded file is empty")
+        
+        logger.info(f"Successfully found audio file: {audio_file} ({file_size} bytes)")
+        logger.info(f"Video title: {title}, Duration: {duration}")
         
         return audio_file, title, duration
         
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Download timeout. The video might be too long or the connection is slow.")
     except Exception as e:
         logger.error(f"Error downloading audio: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to download audio: {str(e)}")
 
+def transcribe_with_gemini(audio_file: str) -> str:
+    """Transcribe audio using Gemini API (experimental)"""
+    try:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise Exception("Gemini API key not found")
+        
+        # Configure Gemini
+        genai.configure(api_key=gemini_api_key)
+        
+        # Note: Gemini doesn't directly support audio transcription yet
+        # This is a placeholder for future functionality
+        # For now, we'll fall back to Whisper
+        raise Exception("Gemini audio transcription not yet supported")
+        
+    except Exception as e:
+        logger.warning(f"Gemini transcription failed: {e}")
+        raise e
+
 def transcribe_audio(audio_file: str) -> str:
-    """Transcribe audio file using Whisper"""
+    """Transcribe audio file using Whisper (primary) with Gemini fallback planned"""
     if not AI_AVAILABLE:
-        raise HTTPException(status_code=500, detail="Whisper model not available")
+        raise HTTPException(status_code=500, detail="AI libraries not available. Please install whisper.")
     
     try:
         logger.info(f"Transcribing audio file: {audio_file}")
+        
+        # Check if file exists
+        if not os.path.exists(audio_file):
+            raise Exception(f"Audio file not found: {audio_file}")
+        
+        # Check file size
+        file_size = os.path.getsize(audio_file)
+        if file_size == 0:
+            raise Exception("Audio file is empty")
+        
+        # Check if file is too large (> 100MB)
+        max_size = 100 * 1024 * 1024  # 100MB
+        if file_size > max_size:
+            logger.warning(f"Audio file is large ({file_size / 1024 / 1024:.1f}MB). This may take a while.")
+        
+        logger.info(f"Audio file size: {file_size} bytes")
+        
+        # Use Whisper as primary transcription method
         model = get_whisper_model()
-        result = model.transcribe(audio_file)
-        return result["text"].strip()
+        logger.info("Starting Whisper transcription...")
+        
+        # Add better error handling for transcription
+        try:
+            result = model.transcribe(
+                audio_file,
+                fp16=False,  # Use fp32 for better compatibility
+                temperature=0.0,  # More deterministic output
+                beam_size=5,  # Better quality
+                best_of=5,  # More attempts for best result
+                patience=1.0
+            )
+            transcription = result["text"].strip()
+        except Exception as whisper_error:
+            logger.error(f"Whisper transcription failed: {whisper_error}")
+            # Try with minimal settings as fallback
+            result = model.transcribe(audio_file, fp16=False)
+            transcription = result["text"].strip()
+        
+        if not transcription:
+            raise Exception("Transcription resulted in empty text. The audio might be silent or corrupted.")
+        
+        # Clean up the transcription
+        transcription = transcription.strip()
+        if len(transcription) < 10:
+            logger.warning(f"Transcription is very short: '{transcription}'")
+        
+        logger.info(f"Transcription completed. Length: {len(transcription)} characters")
+        return transcription
         
     except Exception as e:
         logger.error(f"Error transcribing audio: {e}")
@@ -431,9 +594,25 @@ def summarize_text(text: str) -> str:
         
         summarizer_model = get_summarizer()
         
-        # Check if using OpenAI API
+        # Check if using Gemini API (primary)
+        if summarizer_model == "gemini":
+            try:
+                return summarize_with_gemini(text)
+            except Exception as e:
+                logger.warning(f"Gemini API failed, trying OpenAI: {e}")
+                try:
+                    return summarize_with_openai(text)
+                except Exception as e2:
+                    logger.warning(f"OpenAI API also failed: {e2}")
+                    # Fall through to local model
+        
+        # Check if using OpenAI API (fallback)
         if summarizer_model == "openai":
-            return summarize_with_openai(text)
+            try:
+                return summarize_with_openai(text)
+            except Exception as e:
+                logger.warning(f"OpenAI API failed, trying Gemini: {e}")
+                return summarize_with_gemini(text)
         
         # For very long text, chunk it and summarize each chunk
         if len(text) > 1024:
@@ -468,6 +647,152 @@ def summarize_text(text: str) -> str:
             
     except Exception as e:
         logger.error(f"Error summarizing text: {e}")
+        # Fallback to simple truncation
+        sentences = text.split('. ')
+        if len(sentences) > 3:
+            return '. '.join(sentences[:3]) + '.'
+        return text[:500] + "..." if len(text) > 500 else text
+
+def generate_flashcards_with_gemini(text: str, video_title: str) -> List[Flashcard]:
+    """Generate flashcards using Gemini API"""
+    try:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise Exception("Gemini API key not found")
+        
+        # Configure Gemini
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Create a comprehensive prompt for flashcard generation
+        prompt = f"""
+Based on the following video transcription titled "{video_title}", create 3-5 educational flashcards in JSON format.
+
+Generate a mix of factual questions and multiple-choice questions that test key concepts from the content.
+
+Return ONLY a valid JSON array with this exact structure:
+[
+  {{
+    "question": "What is the main topic discussed?",
+    "answer": "Brief, clear answer",
+    "type": "fact"
+  }},
+  {{
+    "question": "Which of the following best describes X? A) Option 1 B) Option 2 C) Option 3 D) Option 4",
+    "answer": "C) Option 3 - because explanation",
+    "type": "mcq"
+  }}
+]
+
+Transcription:
+{text[:3000]}...
+"""
+        
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Try to extract JSON from the response
+        import json
+        import re
+        
+        # Look for JSON array in the response
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group()
+            try:
+                flashcards_data = json.loads(json_str)
+                flashcards = []
+                for card_data in flashcards_data:
+                    if isinstance(card_data, dict) and 'question' in card_data and 'answer' in card_data:
+                        flashcards.append(Flashcard(
+                            question=card_data.get('question', ''),
+                            answer=card_data.get('answer', ''),
+                            type=card_data.get('type', 'fact')
+                        ))
+                return flashcards
+            except json.JSONDecodeError:
+                pass
+        
+        # Fallback: create basic flashcards from text
+        return generate_fallback_flashcards(text, video_title)
+        
+    except Exception as e:
+        logger.error(f"Error generating flashcards with Gemini: {e}")
+        return generate_fallback_flashcards(text, video_title)
+
+def generate_fallback_flashcards(text: str, video_title: str) -> List[Flashcard]:
+    """Generate basic flashcards as fallback"""
+    flashcards = []
+    
+    # Extract key sentences and create basic Q&A
+    sentences = [s.strip() for s in text.split('.') if len(s.strip()) > 50][:10]
+    
+    # Create a few basic flashcards
+    flashcards.append(Flashcard(
+        question=f"What is the main topic of the video '{video_title}'?",
+        answer=f"The video discusses: {sentences[0][:100]}..." if sentences else "Content analysis",
+        type="fact"
+    ))
+    
+    if len(sentences) > 2:
+        flashcards.append(Flashcard(
+            question="What key concept is explained in this video?",
+            answer=sentences[1][:150] + "..." if len(sentences[1]) > 150 else sentences[1],
+            type="fact"
+        ))
+    
+    if len(sentences) > 4:
+        flashcards.append(Flashcard(
+            question=f"Which statement best describes the content? A) Unrelated topic B) {sentences[2][:50]}... C) Different subject D) None of the above",
+            answer=f"B) {sentences[2][:50]}... - This directly relates to the video content",
+            type="mcq"
+        ))
+    
+    return flashcards
+
+def summarize_with_gemini(text: str) -> str:
+    """Summarize text using Google Gemini API"""
+    try:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise Exception("Gemini API key not found")
+        
+        # Configure Gemini
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # For very long text, chunk it first
+        if len(text) > 4000:
+            chunks = chunk_text(text, 3000)
+            summaries = []
+            
+            for chunk in chunks:
+                if len(chunk.strip()) > 100:
+                    try:
+                        prompt = f"Please summarize the following text in 2-3 sentences:\n\n{chunk}"
+                        response = model.generate_content(prompt)
+                        summaries.append(response.text.strip())
+                    except Exception as e:
+                        logger.warning(f"Failed to summarize chunk with Gemini: {e}")
+                        summaries.append(chunk[:200] + "...")
+            
+            combined_summary = " ".join(summaries)
+            
+            # If still too long, summarize the combined summary
+            if len(combined_summary) > 1000:
+                prompt = f"Please provide a concise summary of the following text:\n\n{combined_summary}"
+                response = model.generate_content(prompt)
+                return response.text.strip()
+            
+            return combined_summary
+        else:
+            # Direct summarization for shorter text
+            prompt = f"Please summarize the following text in 2-3 sentences:\n\n{text}"
+            response = model.generate_content(prompt)
+            return response.text.strip()
+            
+    except Exception as e:
+        logger.error(f"Error using Gemini API: {e}")
         # Fallback to simple truncation
         sentences = text.split('. ')
         if len(sentences) > 3:
@@ -592,6 +917,28 @@ def create_transcript_pdf(transcription: str, summary: str, video_title: str, vi
     output.seek(0)
     return output.getvalue()
 
+def parse_duration(duration_str: str) -> float:
+    """Parse YouTube duration from ISO 8601 format (PT1H2M3S) to seconds"""
+    import re
+    
+    # Remove PT prefix
+    duration_str = duration_str.replace('PT', '')
+    
+    # Extract hours, minutes, seconds using regex
+    hours = re.search(r'(\d+)H', duration_str)
+    minutes = re.search(r'(\d+)M', duration_str)
+    seconds = re.search(r'(\d+)S', duration_str)
+    
+    total_seconds = 0
+    if hours:
+        total_seconds += int(hours.group(1)) * 3600
+    if minutes:
+        total_seconds += int(minutes.group(1)) * 60
+    if seconds:
+        total_seconds += int(seconds.group(1))
+    
+    return float(total_seconds)
+
 def get_youtube_api_service():
     """Initialize YouTube API service"""
     api_key = os.getenv("YOUTUBE_API_KEY")
@@ -628,9 +975,9 @@ def search_videos_with_api(keyword: str) -> List[Video]:
         if not video_ids:
             return []
         
-        # Get detailed video information
+        # Get detailed video information including duration
         videos_response = youtube.videos().list(
-            part="snippet,statistics",
+            part="snippet,statistics,contentDetails",
             id=",".join(video_ids)
         ).execute()
         
@@ -638,6 +985,11 @@ def search_videos_with_api(keyword: str) -> List[Video]:
         for video_item in videos_response.get("items", []):
             snippet = video_item["snippet"]
             statistics = video_item["statistics"]
+            content_details = video_item["contentDetails"]
+            
+            # Parse duration from ISO 8601 format (PT1H2M3S)
+            duration_str = content_details.get("duration", "PT0S")
+            duration_seconds = parse_duration(duration_str)
             
             # Get comments for this video
             comments = []
@@ -667,7 +1019,8 @@ def search_videos_with_api(keyword: str) -> List[Video]:
                 description=snippet["description"],
                 comment_count=int(statistics.get("commentCount", 0)),
                 top_comments=comments,
-                thumbnail_url=snippet["thumbnails"]["high"]["url"]
+                thumbnail_url=snippet["thumbnails"]["high"]["url"],
+                duration=duration_seconds
             ))
         
         return videos
@@ -714,6 +1067,7 @@ def search_videos_with_ytdlp(keyword: str) -> List[Video]:
             description = video_data.get("description", "")
             comment_count = video_data.get("comment_count", 0)
             thumbnail_url = video_data.get("thumbnail", "")
+            duration = video_data.get("duration", 0)  # Duration in seconds
             
             # For yt-dlp, we can't easily get comments without additional requests
             # So we'll create empty comments
@@ -727,7 +1081,8 @@ def search_videos_with_ytdlp(keyword: str) -> List[Video]:
                 description=description,
                 comment_count=comment_count,
                 top_comments=comments,
-                thumbnail_url=thumbnail_url
+                thumbnail_url=thumbnail_url,
+                duration=float(duration) if duration else None
             ))
         
         return videos
@@ -776,8 +1131,8 @@ async def export_to_excel(request: ExportRequest):
         if not request.videos:
             raise HTTPException(status_code=400, detail="No videos to export")
         
-        # Get keyword from the first video's URL or use default
-        keyword = "youtube_results"
+        # Use provided keyword or default
+        keyword = request.keyword or "youtube_results"
         
         excel_data = create_excel_file(request.videos, keyword)
         filename = generate_filename("yt_results", "xlsx", keyword)
@@ -799,8 +1154,8 @@ async def export_to_pdf(request: ExportRequest):
         if not request.videos:
             raise HTTPException(status_code=400, detail="No videos to export")
         
-        # Get keyword from the first video's URL or use default
-        keyword = "youtube_results"
+        # Use provided keyword or default
+        keyword = request.keyword or "youtube_results"
         
         pdf_data = create_pdf_file(request.videos, keyword)
         filename = generate_filename("yt_results", "pdf", keyword)
@@ -827,34 +1182,73 @@ async def transcribe_video(video_url: str):
         
         # Validate YouTube URL
         if not ("youtube.com" in video_url or "youtu.be" in video_url):
-            raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+            raise HTTPException(status_code=400, detail="Invalid YouTube URL. Please provide a valid YouTube link.")
         
         logger.info(f"Starting transcription for video: {video_url}")
         
         # Create temporary directory for audio file
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download audio
-            logger.info("Downloading audio...")
-            audio_file, video_title, duration = download_audio(video_url, temp_dir)
-            
-            # Transcribe audio
-            logger.info("Transcribing audio...")
-            transcription = transcribe_audio(audio_file)
-            
-            # Clean up temporary files
             try:
-                os.remove(audio_file)
-            except:
-                pass
-        
-        logger.info(f"Transcription completed for: {video_title}")
-        
-        return TranscribeResponse(
-            transcription=transcription,
-            video_url=video_url,
-            video_title=video_title,
-            duration=duration
-        )
+                # Download audio
+                logger.info("Downloading audio...")
+                audio_file, video_title, duration = download_audio(video_url, temp_dir)
+                
+                # Transcribe audio
+                logger.info("Transcribing audio...")
+                transcription = transcribe_audio(audio_file)
+                
+                # Clean up temporary files
+                try:
+                    if os.path.exists(audio_file):
+                        os.remove(audio_file)
+                except:
+                    pass
+                
+                logger.info(f"Transcription completed for: {video_title}")
+                
+                return TranscribeResponse(
+                    transcription=transcription,
+                    video_url=video_url,
+                    video_title=video_title,
+                    duration=duration
+                )
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Provide more specific error messages
+                error_msg = str(e).lower()
+                
+                if "http error 400" in error_msg or "precondition check failed" in error_msg:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="YouTube is blocking the download request. This video might be restricted, private, or temporarily unavailable."
+                    )
+                elif "timeout" in error_msg:
+                    raise HTTPException(
+                        status_code=408, 
+                        detail="Download timeout. The video might be too long or your connection is slow."
+                    )
+                elif "not found" in error_msg:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail="Video not found. Please check if the YouTube URL is correct and the video is publicly available."
+                    )
+                elif "audio file is empty" in error_msg:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Downloaded audio file is empty. This video might not have audio or might be corrupted."
+                    )
+                elif "signature extraction failed" in error_msg:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="YouTube has changed its format. Please try updating yt-dlp or try a different video."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"Transcription failed: {str(e)}"
+                    )
         
     except HTTPException:
         raise
@@ -890,6 +1284,105 @@ async def summarize_transcription(request: SummarizeRequest):
     except Exception as e:
         logger.error(f"Error summarizing transcription: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to summarize transcription: {str(e)}")
+
+@app.post("/learning_mode/{video_url:path}", response_model=LearningModeResponse)
+async def learning_mode(video_url: str):
+    """Generate learning flashcards for a YouTube video"""
+    try:
+        if not AI_AVAILABLE:
+            raise HTTPException(status_code=500, detail="AI libraries not available for learning mode.")
+        
+        # Decode URL
+        video_url = urllib.parse.unquote(video_url)
+        
+        # Validate YouTube URL
+        if not ("youtube.com" in video_url or "youtu.be" in video_url):
+            raise HTTPException(status_code=400, detail="Invalid YouTube URL. Please provide a valid YouTube link.")
+        
+        # Extract video ID
+        try:
+            video_id = extract_video_id(video_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="Could not extract video ID from URL. Please check the YouTube URL format.")
+        
+        logger.info(f"Generating learning mode for video: {video_id}")
+        
+        # Create temporary directory for audio file
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                # Download audio and get transcription
+                logger.info("Downloading audio for learning mode...")
+                audio_file, video_title, duration = download_audio(video_url, temp_dir)
+                
+                # Transcribe audio
+                logger.info("Transcribing audio for learning mode...")
+                transcription = transcribe_audio(audio_file)
+                
+                # Check if transcription is long enough for meaningful flashcards
+                if len(transcription.strip()) < 100:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Transcription is too short to generate meaningful flashcards. The video might be too brief or mostly silent."
+                    )
+                
+                # Generate flashcards
+                logger.info("Generating flashcards...")
+                flashcards = generate_flashcards_with_gemini(transcription, video_title)
+                
+                if not flashcards:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Failed to generate flashcards. The content might not be suitable for creating learning materials."
+                    )
+                
+                # Clean up temporary files
+                try:
+                    if os.path.exists(audio_file):
+                        os.remove(audio_file)
+                except:
+                    pass
+                
+                logger.info(f"Learning mode completed for: {video_title}. Generated {len(flashcards)} flashcards")
+                
+                return LearningModeResponse(
+                    video_id=video_id,
+                    video_title=video_title,
+                    flashcards=flashcards,
+                    total_cards=len(flashcards)
+                )
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                # Provide more specific error messages
+                error_msg = str(e).lower()
+                
+                if "http error 400" in error_msg or "precondition check failed" in error_msg:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="YouTube is blocking the download request. This video might be restricted, private, or temporarily unavailable."
+                    )
+                elif "timeout" in error_msg:
+                    raise HTTPException(
+                        status_code=408, 
+                        detail="Processing timeout. The video might be too long."
+                    )
+                elif "not found" in error_msg:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail="Video not found. Please check if the YouTube URL is correct and the video is publicly available."
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"Learning mode failed: {str(e)}"
+                    )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in learning mode: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate learning mode: {str(e)}")
 
 @app.post("/export/transcript")
 async def export_transcript(
@@ -954,6 +1447,39 @@ async def health_check():
         "ai_features": ai_status,
         "export_features": export_status
     }
+
+# Add ffmpeg to PATH if it's not found
+def ensure_ffmpeg_available():
+    """Ensure ffmpeg is available in the PATH"""
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, timeout=5)
+        logger.info("ffmpeg is available in PATH")
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.warning("ffmpeg not found in PATH, trying to add local ffmpeg...")
+        
+        # Try to find local ffmpeg
+        possible_paths = [
+            os.path.join(os.path.dirname(__file__), "..", "ffmpeg", "ffmpeg-master-latest-win64-gpl", "bin"),
+            os.path.join(os.getcwd(), "ffmpeg", "ffmpeg-master-latest-win64-gpl", "bin"),
+            "C:\\Program Files\\ffmpeg\\bin",
+            "C:\\ffmpeg\\bin"
+        ]
+        
+        for path in possible_paths:
+            ffmpeg_exe = os.path.join(path, "ffmpeg.exe")
+            if os.path.exists(ffmpeg_exe):
+                logger.info(f"Found ffmpeg at: {path}")
+                # Add to PATH
+                current_path = os.environ.get("PATH", "")
+                if path not in current_path:
+                    os.environ["PATH"] = f"{path};{current_path}"
+                    logger.info("Added ffmpeg to PATH")
+                return
+        
+        logger.error("Could not find ffmpeg. Transcription may fail.")
+
+# Call this during initialization
+ensure_ffmpeg_available()
 
 if __name__ == "__main__":
     import uvicorn

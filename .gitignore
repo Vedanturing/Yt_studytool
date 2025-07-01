@@ -41,4 +41,7 @@ coverage.xml
 
 # Exported files
 *.xlsx
-*.pdf 
+*.pdf
+
+# Ignore ffmpeg binaries directory
+ffmpeg/ 

@@ -42,6 +42,10 @@ A modular UI-based program that fetches the top 15 YouTube videos from the past 
 ### Prerequisites
 - Python 3.8+
 - Node.js 16+
+- ffmpeg (required for video transcription)
+  - Windows: Download from [ffmpeg.org](https://ffmpeg.org/download.html#build-windows) and add to PATH
+  - Mac: `brew install ffmpeg`
+  - Linux: `sudo apt-get install ffmpeg`
 - YouTube Data API v3 key (optional, for full functionality)
 - OpenAI API key (optional, for enhanced summarization)
 

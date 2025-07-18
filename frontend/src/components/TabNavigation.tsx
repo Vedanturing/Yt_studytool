@@ -33,10 +33,35 @@ const TabNavigation: React.FC = () => {
       label: 'Comments', 
       icon: '💬' 
     },
+    { 
+      id: 'syllabus', 
+      label: 'Syllabus', 
+      icon: '📚' 
+    },
+    { 
+      id: 'quiz', 
+      label: 'Quiz', 
+      icon: '🧠' 
+    },
+    { 
+      id: 'report', 
+      label: 'Report', 
+      icon: '📊' 
+    },
+    { 
+      id: 'offline', 
+      label: 'Offline', 
+      icon: '💾' 
+    },
+    { 
+      id: 'study', 
+      label: 'Study', 
+      icon: '🎓' 
+    },
   ];
 
-  // Don't render if no videos
-  if (filteredVideos.length === 0) {
+  // Don't render if no videos, except for offline and study tabs
+  if (filteredVideos.length === 0 && activeTab !== 'offline' && activeTab !== 'study') {
     return null;
   }
 

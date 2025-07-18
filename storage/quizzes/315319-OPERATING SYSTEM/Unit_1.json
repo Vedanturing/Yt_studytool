@@ -1,0 +1,30 @@
+[
+  {
+    "id": 0,
+    "question": "What is the primary function of an operating system?",
+    "options": [
+      "Run applications",
+      "Manage hardware resources",
+      "Connect to internet",
+      "Create files"
+    ],
+    "correct_answer": "Manage hardware resources",
+    "concept": "OS Functions",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  },
+  {
+    "id": 1,
+    "question": "Which of the following is NOT a type of operating system?",
+    "options": [
+      "Batch OS",
+      "Time-sharing OS",
+      "Real-time OS",
+      "Web OS"
+    ],
+    "correct_answer": "Web OS",
+    "concept": "OS Types",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  }
+]

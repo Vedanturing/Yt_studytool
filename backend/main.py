@@ -4,7 +4,7 @@ import subprocess
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -15,6 +15,9 @@ import tempfile
 import asyncio
 import urllib.parse
 from pathlib import Path
+import re
+import sqlite3
+import hashlib
 
 # Import export libraries
 try:
@@ -41,12 +44,47 @@ except ImportError:
     AI_AVAILABLE = False
     print("Warning: AI libraries not available. Install whisper, openai, transformers, and google-generativeai for AI functionality.")
 
+# Import syllabus parsing libraries
+try:
+    import PyPDF2
+    import docx
+    SYLLABUS_PARSING_AVAILABLE = True
+except ImportError:
+    SYLLABUS_PARSING_AVAILABLE = False
+    print("Warning: Syllabus parsing libraries not available. Install PyPDF2 and python-docx for syllabus functionality.")
+
 # Load environment variables
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Import study routes with robust import handling
+STUDY_ROUTES_AVAILABLE = False
+study_router = None
+
+try:
+    # Try relative import first (when running as module)
+    from .study_routes import router as study_router
+    STUDY_ROUTES_AVAILABLE = True
+    print("✅ Study routes imported successfully (relative import)")
+except ImportError:
+    try:
+        # Try absolute import (when running directly)
+        from study_routes import router as study_router
+        STUDY_ROUTES_AVAILABLE = True
+        print("✅ Study routes imported successfully (absolute import)")
+    except ImportError:
+        try:
+            # Try with backend prefix (when running from project root)
+            from backend.study_routes import router as study_router
+            STUDY_ROUTES_AVAILABLE = True
+            print("✅ Study routes imported successfully (backend prefix)")
+        except ImportError as e:
+            STUDY_ROUTES_AVAILABLE = False
+            print(f"⚠️  Study routes not available: {e}")
+            print("   The study module will not be available.")
 
 app = FastAPI(title="YouTube Video Search API", version="1.0.0")
 
@@ -59,9 +97,144 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include study routes if available
+if STUDY_ROUTES_AVAILABLE and study_router is not None:
+    app.include_router(study_router)
+    print("✅ Study routes included in FastAPI app")
+else:
+    print("⚠️  Study routes not included - module not available")
+
 # Global variables for AI models
 whisper_model = None
 summarizer = None
+
+# Core Pydantic models
+class Comment(BaseModel):
+    text: str
+    author: str
+    likes: int = 0
+
+class Video(BaseModel):
+    title: str
+    video_url: str
+    views: int
+    likes: int
+    description: str
+    comment_count: int
+    top_comments: List[Comment]
+    thumbnail_url: str = ""
+    duration: Optional[float] = None  # Duration in seconds
+
+# New Pydantic models for syllabus feature
+class SyllabusTopic(BaseModel):
+    unit: str
+    topic: str
+    description: Optional[str] = None
+
+class SyllabusUploadRequest(BaseModel):
+    topics: List[SyllabusTopic]
+
+class SyllabusVideoMapping(BaseModel):
+    topic: str
+    unit: str
+    videos: List[Video]
+
+class SyllabusVideosResponse(BaseModel):
+    syllabus_mapping: List[SyllabusVideoMapping]
+    total_topics: int
+    total_videos: int
+
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]
+    answer: str
+    explanation: Optional[str] = None
+    topic: str
+    difficulty: str = "medium"  # "easy", "medium", "hard"
+    type: str = "mcq"  # "mcq", "true_false", "fill_blank", "code_output"
+
+class QuizRequest(BaseModel):
+    topics: List[str]
+    num_questions: int = 20
+    question_types: List[str] = ["mcq", "true_false"]
+    difficulty: str = "medium"  # "easy", "medium", "hard"
+    subject: str = "General"  # For organizing quizzes by subject
+
+class QuizResponse(BaseModel):
+    questions: List[QuizQuestion]
+    total_questions: int
+    topics_covered: List[str]
+    source: str = "api"  # "api", "offline", "fallback"
+    subject: str = "General"
+    difficulty: str = "medium"
+    question_types: List[str] = []
+
+class QuizAttempt(BaseModel):
+    question: str
+    selected_answer: str
+    correct_answer: str
+    is_correct: bool
+    topic: str
+
+class ReportRequest(BaseModel):
+    quiz_attempts: List[QuizAttempt]
+    watched_videos: List[str]
+    syllabus_topics: List[SyllabusTopic]
+
+class ReportResponse(BaseModel):
+    overall_score: float
+    topic_scores: dict
+    weak_areas: List[str]
+    recommendations: List[str]
+    common_mistakes: List[str]
+    unwatched_topics: List[str]
+    report_data: dict
+
+# Existing Pydantic models (reordered)
+class VideoRequest(BaseModel):
+    keyword: str
+
+class TranscribeRequest(BaseModel):
+    video_url: str
+
+class TranscribeResponse(BaseModel):
+    transcription: str
+    video_url: str
+    video_title: str = ""
+    duration: Optional[float] = None
+
+class SummarizeRequest(BaseModel):
+    transcription: str
+
+class SummarizeResponse(BaseModel):
+    summary: str
+    original_length: int
+    summary_length: int
+
+class Flashcard(BaseModel):
+    question: str
+    answer: str
+    type: str  # 'mcq' or 'fact'
+
+class LearningModeResponse(BaseModel):
+    video_id: str
+    video_title: str
+    flashcards: List[Flashcard]
+    total_cards: int
+
+class VideoResponse(BaseModel):
+    videos: List[Video]
+    total_count: int
+    source: str  # "api" or "yt-dlp"
+    keyword: str
+
+class ExportRequest(BaseModel):
+    videos: List[Video]
+    keyword: Optional[str] = ""
+
+class ErrorResponse(BaseModel):
+    error: str
+    details: Optional[str] = None
 
 def initialize_ai_models():
     """Initialize AI models (Whisper and T5)"""
@@ -139,68 +312,6 @@ def get_summarizer():
             logger.error(f"Failed to load summarization model: {e}")
             raise HTTPException(status_code=500, detail="Failed to load summarization model")
     return summarizer
-
-# Pydantic models
-class VideoRequest(BaseModel):
-    keyword: str
-
-class TranscribeRequest(BaseModel):
-    video_url: str
-
-class TranscribeResponse(BaseModel):
-    transcription: str
-    video_url: str
-    video_title: str = ""
-    duration: Optional[float] = None
-
-class SummarizeRequest(BaseModel):
-    transcription: str
-
-class SummarizeResponse(BaseModel):
-    summary: str
-    original_length: int
-    summary_length: int
-
-class Flashcard(BaseModel):
-    question: str
-    answer: str
-    type: str  # 'mcq' or 'fact'
-
-class LearningModeResponse(BaseModel):
-    video_id: str
-    video_title: str
-    flashcards: List[Flashcard]
-    total_cards: int
-
-class Comment(BaseModel):
-    text: str
-    author: str
-    likes: int = 0
-
-class Video(BaseModel):
-    title: str
-    video_url: str
-    views: int
-    likes: int
-    description: str
-    comment_count: int
-    top_comments: List[Comment]
-    thumbnail_url: str = ""
-    duration: Optional[float] = None  # Duration in seconds
-
-class VideoResponse(BaseModel):
-    videos: List[Video]
-    total_count: int
-    source: str  # "api" or "yt-dlp"
-    keyword: str
-
-class ExportRequest(BaseModel):
-    videos: List[Video]
-    keyword: Optional[str] = ""
-
-class ErrorResponse(BaseModel):
-    error: str
-    details: Optional[str] = None
 
 def generate_filename(prefix: str, extension: str, keyword: str = "") -> str:
     """Generate filename with timestamp"""
@@ -1480,6 +1591,1045 @@ def ensure_ffmpeg_available():
 
 # Call this during initialization
 ensure_ffmpeg_available()
+
+# Syllabus parsing functions
+def parse_text_syllabus(text: str) -> List[SyllabusTopic]:
+    """Parse syllabus from plain text"""
+    topics = []
+    lines = text.strip().split('\n')
+    current_unit = "Unit 1"
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check for unit headers (Unit 1, Chapter 1, etc.)
+        unit_match = re.match(r'^(Unit|Chapter|Module|Section)\s*(\d+)[:.\s]*(.*)', line, re.IGNORECASE)
+        if unit_match:
+            current_unit = f"{unit_match.group(1)} {unit_match.group(2)}"
+            topic = unit_match.group(3).strip()
+            if topic:
+                topics.append(SyllabusTopic(unit=current_unit, topic=topic))
+        else:
+            # Check for numbered topics (1. Topic, 1) Topic, etc.)
+            topic_match = re.match(r'^\d+[.)]\s*(.+)', line)
+            if topic_match:
+                topic = topic_match.group(1).strip()
+                topics.append(SyllabusTopic(unit=current_unit, topic=topic))
+            else:
+                # Check for bullet points or dashes
+                bullet_match = re.match(r'^[-•*]\s*(.+)', line)
+                if bullet_match:
+                    topic = bullet_match.group(1).strip()
+                    topics.append(SyllabusTopic(unit=current_unit, topic=topic))
+                else:
+                    # Assume it's a topic if it's not empty and doesn't match other patterns
+                    if len(line) > 3 and not line.startswith('#'):
+                        topics.append(SyllabusTopic(unit=current_unit, topic=line))
+    
+    return topics
+
+def parse_pdf_syllabus(file_content: bytes) -> List[SyllabusTopic]:
+    """Parse syllabus from PDF file"""
+    if not SYLLABUS_PARSING_AVAILABLE:
+        raise HTTPException(status_code=500, detail="PDF parsing not available. Install PyPDF2.")
+    
+    try:
+        pdf_file = io.BytesIO(file_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        
+        return parse_text_syllabus(text)
+    except Exception as e:
+        logger.error(f"Error parsing PDF: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse PDF: {str(e)}")
+
+def parse_docx_syllabus(file_content: bytes) -> List[SyllabusTopic]:
+    """Parse syllabus from DOCX file"""
+    if not SYLLABUS_PARSING_AVAILABLE:
+        raise HTTPException(status_code=500, detail="DOCX parsing not available. Install python-docx.")
+    
+    try:
+        docx_file = io.BytesIO(file_content)
+        doc = docx.Document(docx_file)
+        
+        text = ""
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        
+        return parse_text_syllabus(text)
+    except Exception as e:
+        logger.error(f"Error parsing DOCX: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse DOCX: {str(e)}")
+
+def generate_quiz_questions(topics: List[str], num_questions: int = 20, 
+                          difficulty: str = "medium", question_types: List[str] = None) -> List[QuizQuestion]:
+    """Generate quiz questions using AI with difficulty and type support"""
+    if not AI_AVAILABLE:
+        raise HTTPException(status_code=500, detail="AI libraries not available for quiz generation.")
+    
+    try:
+        # Use Gemini API for quiz generation
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if gemini_api_key:
+            return generate_quiz_with_gemini(topics, num_questions, difficulty, question_types)
+        else:
+            # Fallback to OpenAI
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+            if openai_api_key:
+                return generate_quiz_with_openai(topics, num_questions, difficulty, question_types)
+            else:
+                return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+    except Exception as e:
+        logger.error(f"Error generating quiz: {e}")
+        return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+
+def generate_quiz_with_gemini(topics: List[str], num_questions: int, 
+                            difficulty: str = "medium", question_types: List[str] = None) -> List[QuizQuestion]:
+    """Generate quiz using Gemini API with difficulty and type support"""
+    try:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            raise Exception("Gemini API key not found")
+        
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        
+        topics_text = ", ".join(topics)
+        question_types_text = ", ".join(question_types) if question_types else "mcq, true_false"
+        
+        # Adjust prompt based on difficulty
+        difficulty_instruction = {
+            "easy": "Create straightforward questions that test basic understanding and recall.",
+            "medium": "Create questions that require some analysis and application of concepts.",
+            "hard": "Create challenging questions that require deep understanding, synthesis, and critical thinking."
+        }.get(difficulty, "Create questions that require some analysis and application of concepts.")
+        
+        prompt = f"""
+As an expert educator and content creator, generate {num_questions} {difficulty}-level quiz questions covering the following topics: {topics_text}
+
+Question types to include: {question_types_text}
+
+{difficulty_instruction}
+
+For each question, ensure:
+1. **Clarity and Conciseness**: Questions are easy to understand but require appropriate level of thinking.
+2. **Plausible Distractors (for MCQs)**: Options should be relevant and challenging for the {difficulty} level.
+3. **Informative Explanations**: The explanation should provide deeper understanding.
+4. **Diverse Question Types**: Include the specified question types.
+5. **Relevance**: Directly relate to the core concepts within the specified topics.
+
+Return ONLY a valid JSON array with the exact structure below. Include difficulty and type for each question.
+
+[
+  {{
+    "question": "What is the primary goal of supervised learning in machine learning?",
+    "options": ["To group similar data points together without predefined categories", "To find optimal strategies through trial and error interactions", "To learn a mapping from input features to an output target based on labeled examples", "To reduce the dimensionality of data while preserving its structure"],
+    "answer": "To learn a mapping from input features to an output target based on labeled examples",
+    "explanation": "Supervised learning algorithms are trained on a labeled dataset, meaning each input example is paired with its correct output. The goal is to learn a function that maps inputs to outputs to make predictions on new, unseen data.",
+    "topic": "Supervised Learning",
+    "difficulty": "{difficulty}",
+    "type": "mcq"
+  }},
+  {{
+    "question": "Artificial Intelligence (AI) exclusively focuses on mimicking human intelligence.",
+    "options": ["True", "False"],
+    "answer": "False",
+    "explanation": "While mimicking human intelligence is a significant aspect, AI also encompasses areas like narrow AI (designed for specific tasks, e.g., chess), general AI (human-level intelligence), and superintelligence, which extends beyond human capabilities.",
+    "topic": "Introduction to Artificial Intelligence",
+    "difficulty": "{difficulty}",
+    "type": "true_false"
+  }}
+]
+
+Do not include any introductory or concluding remarks outside the JSON array.
+"""
+        
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Extract JSON from response
+        import re
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group()
+            questions_data = json.loads(json_str)
+            
+            questions = []
+            for q_data in questions_data:
+                if isinstance(q_data, dict) and 'question' in q_data and 'answer' in q_data:
+                    questions.append(QuizQuestion(
+                        question=q_data.get('question', ''),
+                        options=q_data.get('options', []),
+                        answer=q_data.get('answer', ''),
+                        explanation=q_data.get('explanation', ''),
+                        topic=q_data.get('topic', topics[0] if topics else 'General'),
+                        difficulty=q_data.get('difficulty', difficulty),
+                        type=q_data.get('type', 'mcq')
+                    ))
+            return questions
+        
+        return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+        
+    except Exception as e:
+        logger.error(f"Error generating quiz with Gemini: {e}")
+        return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+
+def generate_quiz_with_openai(topics: List[str], num_questions: int, 
+                            difficulty: str = "medium", question_types: List[str] = None) -> List[QuizQuestion]:
+    """Generate quiz using OpenAI API with difficulty and type support"""
+    try:
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise Exception("OpenAI API key not found")
+        
+        client = openai.OpenAI(api_key=openai_api_key)
+        
+        topics_text = ", ".join(topics)
+        question_types_text = ", ".join(question_types) if question_types else "mcq, true_false"
+        
+        prompt = f"""
+Create {num_questions} {difficulty}-level quiz questions based on these topics: {topics_text}
+
+Question types to include: {question_types_text}
+
+Return ONLY a valid JSON array with this exact structure:
+[
+  {{
+    "question": "What is the main purpose of machine learning?",
+    "options": ["Data storage", "Pattern recognition", "Web browsing", "File compression"],
+    "answer": "Pattern recognition",
+    "explanation": "Machine learning focuses on identifying patterns in data to make predictions.",
+    "topic": "Machine Learning Basics",
+    "difficulty": "{difficulty}",
+    "type": "mcq"
+  }},
+  {{
+    "question": "Neural networks can only process numerical data.",
+    "options": ["True", "False"],
+    "answer": "False",
+    "explanation": "Neural networks can process various data types including text, images, and audio.",
+    "topic": "Neural Networks",
+    "difficulty": "{difficulty}",
+    "type": "true_false"
+  }}
+]
+
+Distribute questions evenly across the topics. Make questions appropriate for {difficulty} level.
+"""
+        
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that creates educational quiz questions."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=2000,
+            temperature=0.7
+        )
+        
+        response_text = response.choices[0].message.content.strip()
+        
+        # Extract JSON from response
+        import re
+        json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group()
+            questions_data = json.loads(json_str)
+            
+            questions = []
+            for q_data in questions_data:
+                if isinstance(q_data, dict) and 'question' in q_data and 'answer' in q_data:
+                    questions.append(QuizQuestion(
+                        question=q_data.get('question', ''),
+                        options=q_data.get('options', []),
+                        answer=q_data.get('answer', ''),
+                        explanation=q_data.get('explanation', ''),
+                        topic=q_data.get('topic', topics[0] if topics else 'General'),
+                        difficulty=q_data.get('difficulty', difficulty),
+                        type=q_data.get('type', 'mcq')
+                    ))
+            return questions
+        
+        return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+        
+    except Exception as e:
+        logger.error(f"Error generating quiz with OpenAI: {e}")
+        return generate_fallback_quiz(topics, num_questions, difficulty, question_types)
+
+def generate_fallback_quiz(topics: List[str], num_questions: int, 
+                          difficulty: str = "medium", question_types: List[str] = None) -> List[QuizQuestion]:
+    """Generate basic quiz questions as fallback with difficulty and type support"""
+    questions = []
+    question_types = question_types or ["mcq", "true_false"]
+    
+    # Question templates for variety
+    mcq_templates = [
+        ("What is the primary purpose of {topic}?", ["Data analysis", "Problem solving", "Information processing", "All of the above"], "All of the above"),
+        ("Which of the following best describes {topic}?", ["A simple concept", "A complex system", "A fundamental principle", "An optional feature"], "A fundamental principle"),
+        ("{topic} is most commonly used for:", ["Basic operations", "Advanced applications", "Educational purposes", "Research and development"], "Advanced applications"),
+        ("The main advantage of {topic} is:", ["Speed", "Accuracy", "Flexibility", "All of the above"], "All of the above"),
+        ("{topic} typically involves:", ["Single step processes", "Multi-step procedures", "Random actions", "No specific method"], "Multi-step procedures")
+    ]
+    
+    true_false_templates = [
+        ("{topic} is essential for modern computing systems.", "True"),
+        ("{topic} can only be applied in specific scenarios.", "False"),
+        ("Understanding {topic} requires advanced mathematical knowledge.", "False"),
+        ("{topic} has evolved significantly over the years.", "True"),
+        ("{topic} is only relevant for technical professionals.", "False"),
+        ("{topic} provides a foundation for other related concepts.", "True"),
+        ("{topic} is a static field that doesn't change.", "False"),
+        ("{topic} can be learned through practical experience.", "True")
+    ]
+    
+    # Generate questions ensuring good coverage
+    questions_per_topic = max(1, num_questions // len(topics)) if topics else num_questions
+    
+    for i, topic in enumerate(topics):
+        topic_questions = 0
+        
+        # Add MCQ questions for this topic
+        if "mcq" in question_types:
+            for j, (template, options, answer) in enumerate(mcq_templates):
+                if topic_questions >= questions_per_topic:
+                    break
+                questions.append(QuizQuestion(
+                    question=template.format(topic=topic),
+                    options=options,
+                    answer=answer,
+                    explanation=f"{topic} is a comprehensive concept that encompasses multiple aspects including {', '.join(options[:-1])}.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="mcq"
+                ))
+                topic_questions += 1
+        
+        # Add True/False questions for this topic
+        if "true_false" in question_types:
+            for j, (template, answer) in enumerate(true_false_templates):
+                if topic_questions >= questions_per_topic:
+                    break
+                questions.append(QuizQuestion(
+                    question=template.format(topic=topic),
+                    options=["True", "False"],
+                    answer=answer,
+                    explanation=f"This statement about {topic} is {answer.lower()} because {topic} has specific characteristics and applications.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="true_false"
+                ))
+                topic_questions += 1
+    
+    # If we need more questions, add general questions
+    while len(questions) < num_questions:
+        remaining = num_questions - len(questions)
+        if remaining >= 2:
+            # Add one MCQ and one True/False
+            topic = topics[len(questions) % len(topics)] if topics else "General Computing"
+            
+            # MCQ
+            if "mcq" in question_types:
+                questions.append(QuizQuestion(
+                    question=f"What aspect of {topic} is most important for beginners?",
+                    options=["Advanced techniques", "Basic understanding", "Complex algorithms", "Specialized tools"],
+                    answer="Basic understanding",
+                    explanation=f"Starting with basic understanding of {topic} provides a solid foundation for advanced learning.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="mcq"
+                ))
+            
+            # True/False
+            if "true_false" in question_types:
+                questions.append(QuizQuestion(
+                    question=f"{topic} requires continuous learning and adaptation.",
+                    options=["True", "False"],
+                    answer="True",
+                    explanation=f"{topic} is a dynamic field that evolves with technology and requires ongoing education.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="true_false"
+                ))
+        else:
+            # Add one final question
+            topic = topics[0] if topics else "General Computing"
+            question_type = question_types[0] if question_types else "mcq"
+            
+            if question_type == "mcq":
+                questions.append(QuizQuestion(
+                    question=f"Which statement about {topic} is correct?",
+                    options=["It's only for experts", "It's accessible to everyone", "It's outdated", "It's too simple"],
+                    answer="It's accessible to everyone",
+                    explanation=f"{topic} is designed to be accessible to learners at all levels with proper guidance.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="mcq"
+                ))
+            else:
+                questions.append(QuizQuestion(
+                    question=f"{topic} is a fundamental concept in computing.",
+                    options=["True", "False"],
+                    answer="True",
+                    explanation=f"{topic} provides essential knowledge for understanding modern computing systems.",
+                    topic=topic,
+                    difficulty=difficulty,
+                    type="true_false"
+                ))
+    
+    return questions[:num_questions]  # Ensure we don't exceed the requested number
+
+def generate_learning_report(quiz_attempts: List[QuizAttempt], watched_videos: List[str], syllabus_topics: List[SyllabusTopic]) -> ReportResponse:
+    """Generate comprehensive learning report"""
+    try:
+        # Calculate overall score
+        total_questions = len(quiz_attempts)
+        correct_answers = sum(1 for attempt in quiz_attempts if attempt.is_correct)
+        overall_score = (correct_answers / total_questions * 100) if total_questions > 0 else 0
+        
+        # Calculate topic scores
+        topic_scores = {}
+        topic_attempts = {}
+        for attempt in quiz_attempts:
+            if attempt.topic not in topic_attempts:
+                topic_attempts[attempt.topic] = []
+            topic_attempts[attempt.topic].append(attempt)
+        
+        for topic, attempts in topic_attempts.items():
+            correct = sum(1 for a in attempts if a.is_correct)
+            topic_scores[topic] = (correct / len(attempts) * 100) if attempts else 0
+        
+        # Identify weak areas (topics with score < 70%)
+        weak_areas = [topic for topic, score in topic_scores.items() if score < 70]
+        
+        # Find common mistakes
+        mistakes = [attempt for attempt in quiz_attempts if not attempt.is_correct]
+        common_mistakes = []
+        if mistakes:
+            # Group by topic and find most common wrong answers
+            mistake_groups = {}
+            for mistake in mistakes:
+                if mistake.topic not in mistake_groups:
+                    mistake_groups[mistake.topic] = []
+                mistake_groups[mistake.topic].append(mistake.selected_answer)
+            
+            for topic, wrong_answers in mistake_groups.items():
+                if len(wrong_answers) >= 2:  # At least 2 mistakes in same topic
+                    common_mistakes.append(f"Multiple mistakes in {topic}: {', '.join(set(wrong_answers))}")
+        
+        # Find unwatched topics
+        watched_topics = set()
+        for video_url in watched_videos:
+            # Extract topic from video URL or title (simplified)
+            for topic in syllabus_topics:
+                if topic.topic.lower() in video_url.lower():
+                    watched_topics.add(topic.topic)
+        
+        unwatched_topics = [topic.topic for topic in syllabus_topics if topic.topic not in watched_topics]
+        
+        # Generate recommendations
+        recommendations = []
+        if weak_areas:
+            recommendations.append(f"Focus on reviewing: {', '.join(weak_areas[:3])}")
+        if unwatched_topics:
+            recommendations.append(f"Watch videos on: {', '.join(unwatched_topics[:3])}")
+        if overall_score < 80:
+            recommendations.append("Consider retaking the quiz after reviewing weak areas")
+        if not recommendations:
+            recommendations.append("Great job! Keep up the good work.")
+        
+        # Prepare report data
+        report_data = {
+            "quiz_summary": {
+                "total_questions": total_questions,
+                "correct_answers": correct_answers,
+                "incorrect_answers": total_questions - correct_answers,
+                "accuracy_percentage": round(overall_score, 2)
+            },
+            "topic_breakdown": topic_scores,
+            "performance_analysis": {
+                "strongest_topic": max(topic_scores.items(), key=lambda x: x[1])[0] if topic_scores else "N/A",
+                "weakest_topic": min(topic_scores.items(), key=lambda x: x[1])[0] if topic_scores else "N/A",
+                "topics_covered": len(topic_scores),
+                "topics_missed": len([t for t in syllabus_topics if t.topic not in topic_scores])
+            },
+            "study_recommendations": recommendations,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return ReportResponse(
+            overall_score=overall_score,
+            topic_scores=topic_scores,
+            weak_areas=weak_areas,
+            recommendations=recommendations,
+            common_mistakes=common_mistakes,
+            unwatched_topics=unwatched_topics,
+            report_data=report_data
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
+# Syllabus endpoints
+@app.post("/upload_syllabus")
+async def upload_syllabus(
+    file: Optional[UploadFile] = File(None),
+    text_content: Optional[str] = Form(None)
+):
+    """Upload and parse syllabus from file or text"""
+    try:
+        topics = []
+        
+        if file:
+            # Parse uploaded file
+            file_content = await file.read()
+            file_extension = file.filename.lower().split('.')[-1] if file.filename else ''
+            
+            if file_extension == 'pdf':
+                topics = parse_pdf_syllabus(file_content)
+            elif file_extension in ['docx', 'doc']:
+                topics = parse_docx_syllabus(file_content)
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported file format. Use PDF or DOCX.")
+        elif text_content:
+            # Parse text content
+            topics = parse_text_syllabus(text_content)
+        else:
+            raise HTTPException(status_code=400, detail="Either file or text_content must be provided.")
+        
+        if not topics:
+            raise HTTPException(status_code=400, detail="No topics found in the syllabus. Please check the format.")
+        
+        logger.info(f"Successfully parsed {len(topics)} topics from syllabus")
+        
+        return {
+            "topics": topics,
+            "total_topics": len(topics),
+            "units": list(set(topic.unit for topic in topics))
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading syllabus: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload syllabus: {str(e)}")
+
+@app.post("/videos_by_syllabus", response_model=SyllabusVideosResponse)
+async def get_videos_by_syllabus(request: SyllabusUploadRequest):
+    """Get videos for each syllabus topic"""
+    try:
+        syllabus_mapping = []
+        total_videos = 0
+        
+        for topic in request.topics:
+            try:
+                # Search for videos using the topic name
+                search_keyword = f"{topic.topic} {topic.unit}"
+                videos = []
+                
+                # Try YouTube API first
+                try:
+                    videos = search_videos_with_api(search_keyword)
+                    videos = videos[:5]  # Limit to top 5 videos
+                except:
+                    # Fallback to yt-dlp
+                    try:
+                        videos = search_videos_with_ytdlp(search_keyword)
+                        videos = videos[:5]  # Limit to top 5 videos
+                    except:
+                        logger.warning(f"Failed to find videos for topic: {topic.topic}")
+                        continue
+                
+                syllabus_mapping.append(SyllabusVideoMapping(
+                    topic=topic.topic,
+                    unit=topic.unit,
+                    videos=videos
+                ))
+                
+                total_videos += len(videos)
+                
+            except Exception as e:
+                logger.warning(f"Error processing topic {topic.topic}: {e}")
+                continue
+        
+        logger.info(f"Found {total_videos} videos for {len(syllabus_mapping)} topics")
+        
+        return SyllabusVideosResponse(
+            syllabus_mapping=syllabus_mapping,
+            total_topics=len(syllabus_mapping),
+            total_videos=total_videos
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting videos by syllabus: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get videos by syllabus: {str(e)}")
+
+@app.post("/generate_quiz", response_model=QuizResponse)
+async def generate_quiz(request: QuizRequest):
+    """Generate quiz questions based on topics with offline support"""
+    try:
+        if not request.topics:
+            raise HTTPException(status_code=400, detail="No topics provided for quiz generation.")
+        
+        # Try to generate quiz using AI
+        try:
+            questions = generate_quiz_questions(request.topics, request.num_questions, request.difficulty, request.question_types)
+            
+            if questions:
+                # Save quiz to local storage
+                try:
+                    for topic in request.topics:
+                        topic_questions = [q for q in questions if q.topic == topic]
+                        if topic_questions:
+                            save_quiz_to_storage(
+                                request.subject, 
+                                "Unit 1",  # Default unit, can be enhanced
+                                topic, 
+                                topic_questions,
+                                request.difficulty,
+                                request.question_types
+                            )
+                except Exception as save_error:
+                    logger.warning(f"Failed to save quiz to storage: {save_error}")
+                
+                # Get unique topics covered
+                topics_covered = list(set(q.topic for q in questions))
+                
+                logger.info(f"Generated {len(questions)} quiz questions covering {len(topics_covered)} topics")
+                
+                return QuizResponse(
+                    questions=questions,
+                    total_questions=len(questions),
+                    topics_covered=topics_covered,
+                    source="api",
+                    subject=request.subject,
+                    difficulty=request.difficulty,
+                    question_types=request.question_types
+                )
+        
+        except Exception as ai_error:
+            logger.warning(f"AI quiz generation failed: {ai_error}")
+            
+            # Try to load from offline storage
+            offline_questions = []
+            for topic in request.topics:
+                offline_quiz = load_quiz_from_storage(request.subject, "Unit 1", topic)
+                if offline_quiz:
+                    for q_data in offline_quiz.get("questions", []):
+                        offline_questions.append(QuizQuestion(
+                            question=q_data["question"],
+                            options=q_data["options"],
+                            answer=q_data["answer"],
+                            explanation=q_data.get("explanation"),
+                            topic=q_data["topic"],
+                            difficulty=q_data.get("difficulty", "medium"),
+                            type=q_data.get("type", "mcq")
+                        ))
+            
+            if offline_questions:
+                topics_covered = list(set(q.topic for q in offline_questions))
+                logger.info(f"Loaded {len(offline_questions)} questions from offline storage")
+                
+                return QuizResponse(
+                    questions=offline_questions,
+                    total_questions=len(offline_questions),
+                    topics_covered=topics_covered,
+                    source="offline",
+                    subject=request.subject,
+                    difficulty=request.difficulty,
+                    question_types=request.question_types
+                )
+            
+            # Fallback to basic questions
+            fallback_questions = generate_fallback_quiz(request.topics, request.num_questions)
+            topics_covered = list(set(q.topic for q in fallback_questions))
+            
+            logger.info(f"Using fallback quiz with {len(fallback_questions)} questions")
+            
+            return QuizResponse(
+                questions=fallback_questions,
+                total_questions=len(fallback_questions),
+                topics_covered=topics_covered,
+                source="fallback",
+                subject=request.subject,
+                difficulty=request.difficulty,
+                question_types=request.question_types
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating quiz: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate quiz: {str(e)}")
+
+@app.post("/generate_report", response_model=ReportResponse)
+async def generate_report(request: ReportRequest):
+    """Generate comprehensive learning report"""
+    try:
+        if not request.quiz_attempts:
+            raise HTTPException(status_code=400, detail="No quiz attempts provided.")
+        
+        # Generate the report
+        report = generate_learning_report(
+            request.quiz_attempts,
+            request.watched_videos,
+            request.syllabus_topics
+        )
+        
+        logger.info(f"Generated learning report with {report.overall_score:.1f}% overall score")
+        
+        return report
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
+# Create storage directories
+def ensure_storage_directories():
+    """Create necessary storage directories for offline functionality"""
+    directories = [
+        "storage/quizzes",
+        "storage/materials", 
+        "storage/notes",
+        "storage/reports",
+        "storage/report_templates"
+    ]
+    
+    for directory in directories:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+    
+    # Initialize SQLite database for metadata
+    init_storage_db()
+
+def init_storage_db():
+    """Initialize SQLite database for storage metadata"""
+    db_path = "storage/storage.db"
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Create tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS quiz_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            unit TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            question_count INTEGER,
+            difficulty TEXT DEFAULT 'medium',
+            question_types TEXT,
+            hash TEXT UNIQUE
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS study_materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            material_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT,
+            filename TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            metadata TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            score REAL,
+            topics_covered TEXT
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def save_quiz_to_storage(subject: str, unit: str, topic: str, questions: List[QuizQuestion], 
+                        difficulty: str = "medium", question_types: List[str] = None) -> str:
+    """Save quiz to local storage"""
+    try:
+        # Create subject directory
+        subject_dir = Path(f"storage/quizzes/{subject}")
+        subject_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename
+        safe_unit = re.sub(r'[^\w\s-]', '', unit).replace(' ', '_')
+        safe_topic = re.sub(r'[^\w\s-]', '', topic).replace(' ', '_')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{safe_unit}_{safe_topic}_{timestamp}.json"
+        filepath = subject_dir / filename
+        
+        # Prepare quiz data
+        quiz_data = {
+            "subject": subject,
+            "unit": unit,
+            "topic": topic,
+            "created_at": datetime.now().isoformat(),
+            "difficulty": difficulty,
+            "question_types": question_types or ["mcq", "true_false"],
+            "question_count": len(questions),
+            "questions": [
+                {
+                    "question": q.question,
+                    "options": q.options,
+                    "answer": q.answer,
+                    "explanation": q.explanation,
+                    "topic": q.topic,
+                    "difficulty": getattr(q, 'difficulty', 'medium'),
+                    "type": getattr(q, 'type', 'mcq')
+                }
+                for q in questions
+            ]
+        }
+        
+        # Save to file
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(quiz_data, f, indent=2, ensure_ascii=False)
+        
+        # Save metadata to database
+        save_quiz_metadata(subject, unit, topic, filename, len(questions), difficulty, question_types)
+        
+        return str(filepath)
+        
+    except Exception as e:
+        logger.error(f"Error saving quiz to storage: {e}")
+        raise
+
+def save_quiz_metadata(subject: str, unit: str, topic: str, filename: str, 
+                      question_count: int, difficulty: str, question_types: List[str]):
+    """Save quiz metadata to SQLite database"""
+    try:
+        conn = sqlite3.connect("storage/storage.db")
+        cursor = conn.cursor()
+        
+        # Generate hash for uniqueness
+        content_hash = hashlib.md5(f"{subject}{unit}{topic}{filename}".encode()).hexdigest()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO quiz_metadata 
+            (subject, unit, topic, filename, question_count, difficulty, question_types, hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (subject, unit, topic, filename, question_count, difficulty, 
+              json.dumps(question_types) if question_types else None, content_hash))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error saving quiz metadata: {e}")
+
+def load_quiz_from_storage(subject: str, unit: str, topic: str) -> Optional[dict]:
+    """Load quiz from local storage"""
+    try:
+        # Find the most recent quiz for this topic
+        conn = sqlite3.connect("storage/storage.db")
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT filename FROM quiz_metadata 
+            WHERE subject = ? AND unit = ? AND topic = ?
+            ORDER BY created_at DESC LIMIT 1
+        ''', (subject, unit, topic))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            return None
+        
+        filename = result[0]
+        filepath = Path(f"storage/quizzes/{subject}/{filename}")
+        
+        if not filepath.exists():
+            return None
+        
+        with open(filepath, 'r', encoding='utf-8') as f:
+            quiz_data = json.load(f)
+        
+        return quiz_data
+        
+    except Exception as e:
+        logger.error(f"Error loading quiz from storage: {e}")
+        return None
+
+def get_available_quizzes(subject: str = None) -> List[dict]:
+    """Get list of available quizzes from storage"""
+    try:
+        conn = sqlite3.connect("storage/storage.db")
+        cursor = conn.cursor()
+        
+        if subject:
+            cursor.execute('''
+                SELECT subject, unit, topic, created_at, question_count, difficulty, question_types
+                FROM quiz_metadata 
+                WHERE subject = ?
+                ORDER BY created_at DESC
+            ''', (subject,))
+        else:
+            cursor.execute('''
+                SELECT subject, unit, topic, created_at, question_count, difficulty, question_types
+                FROM quiz_metadata 
+                ORDER BY created_at DESC
+            ''')
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        quizzes = []
+        for row in results:
+            quizzes.append({
+                "subject": row[0],
+                "unit": row[1], 
+                "topic": row[2],
+                "created_at": row[3],
+                "question_count": row[4],
+                "difficulty": row[5],
+                "question_types": json.loads(row[6]) if row[6] else []
+            })
+        
+        return quizzes
+        
+    except Exception as e:
+        logger.error(f"Error getting available quizzes: {e}")
+        return []
+
+# New endpoints for offline functionality
+@app.get("/available_quizzes")
+async def get_available_quizzes_endpoint(subject: str = None):
+    """Get list of available quizzes from storage"""
+    try:
+        quizzes = get_available_quizzes(subject)
+        return {
+            "quizzes": quizzes,
+            "total_count": len(quizzes)
+        }
+    except Exception as e:
+        logger.error(f"Error getting available quizzes: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get available quizzes: {str(e)}")
+
+@app.get("/load_quiz/{subject}/{unit}/{topic}")
+async def load_quiz_endpoint(subject: str, unit: str, topic: str):
+    """Load a specific quiz from storage"""
+    try:
+        quiz_data = load_quiz_from_storage(subject, unit, topic)
+        if not quiz_data:
+            raise HTTPException(status_code=404, detail="Quiz not found in storage")
+        
+        return quiz_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading quiz: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load quiz: {str(e)}")
+
+@app.post("/save_study_material")
+async def save_study_material(
+    subject: str = Form(...),
+    topic: str = Form(...),
+    material_type: str = Form(...),  # "video", "note", "pdf"
+    title: str = Form(...),
+    url: str = Form(None),
+    file: UploadFile = File(None)
+):
+    """Save study material to local storage"""
+    try:
+        # Create directory structure
+        material_dir = Path(f"storage/materials/{subject}/{topic}")
+        material_dir.mkdir(parents=True, exist_ok=True)
+        
+        filename = None
+        if file:
+            # Save uploaded file
+            safe_filename = re.sub(r'[^\w\s-]', '', file.filename).replace(' ', '_')
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{timestamp}_{safe_filename}"
+            filepath = material_dir / filename
+            
+            with open(filepath, "wb") as f:
+                content = await file.read()
+                f.write(content)
+        
+        # Save metadata to database
+        conn = sqlite3.connect("storage/storage.db")
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO study_materials 
+            (subject, topic, material_type, title, url, filename, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (subject, topic, material_type, title, url, filename, json.dumps({})))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "message": "Study material saved successfully",
+            "subject": subject,
+            "topic": topic,
+            "title": title,
+            "filename": filename
+        }
+        
+    except Exception as e:
+        logger.error(f"Error saving study material: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save study material: {str(e)}")
+
+@app.get("/get_study_materials/{subject}/{topic}")
+async def get_study_materials_endpoint(subject: str, topic: str):
+    """Get study materials for a specific topic"""
+    try:
+        conn = sqlite3.connect("storage/storage.db")
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT material_type, title, url, filename, created_at, metadata
+            FROM study_materials 
+            WHERE subject = ? AND topic = ?
+            ORDER BY created_at DESC
+        ''', (subject, topic))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        materials = []
+        for row in results:
+            materials.append({
+                "material_type": row[0],
+                "title": row[1],
+                "url": row[2],
+                "filename": row[3],
+                "created_at": row[4],
+                "metadata": json.loads(row[5]) if row[5] else {}
+            })
+        
+        return {
+            "subject": subject,
+            "topic": topic,
+            "materials": materials,
+            "total_count": len(materials)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting study materials: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get study materials: {str(e)}")
+
+# Initialize storage on startup
+ensure_storage_directories()
 
 if __name__ == "__main__":
     import uvicorn

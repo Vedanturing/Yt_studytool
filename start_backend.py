@@ -8,6 +8,10 @@ import sys
 import subprocess
 from pathlib import Path
 
+# Add the project root to Python path for robust imports
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+
 def check_dependencies():
     """Check if required dependencies are installed"""
     try:
@@ -72,6 +76,29 @@ def main():
     # Start the server
     try:
         import uvicorn
+        
+        # Try to import the app to check if study routes are available
+        try:
+            from backend.main import app
+            print("✅ Backend app imported successfully")
+            
+            # Check if study routes are included
+            study_routes_available = any(
+                route.path.startswith("/study") 
+                for route in app.routes 
+                if hasattr(route, 'path')
+            )
+            
+            if study_routes_available:
+                print("✅ Study routes are available")
+            else:
+                print("⚠️  Study routes not found - check import logs above")
+                
+        except ImportError as e:
+            print(f"⚠️  Warning importing backend: {e}")
+            print("Continuing with server startup...")
+        
+        # Start the server
         uvicorn.run(
             "backend.main:app",
             host="0.0.0.0",

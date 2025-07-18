@@ -76,6 +76,168 @@ export interface LearningModeState {
   video_id: string;
 }
 
+// Syllabus-related interfaces
+export interface SyllabusTopic {
+  unit: string;
+  topic: string;
+  description?: string;
+}
+
+export interface SyllabusVideoMapping {
+  topic: string;
+  unit: string;
+  videos: Video[];
+}
+
+export interface SyllabusVideosResponse {
+  syllabus_mapping: SyllabusVideoMapping[];
+  total_topics: number;
+  total_videos: number;
+}
+
+export interface QuizQuestion {
+  question: string;
+  options: string[];
+  answer: string;
+  explanation?: string;
+  topic: string;
+  difficulty?: string; // "easy", "medium", "hard"
+  type?: string; // "mcq", "true_false", "fill_blank", "code_output"
+}
+
+export interface QuizResponse {
+  questions: QuizQuestion[];
+  total_questions: number;
+  topics_covered: string[];
+}
+
+export interface QuizAttempt {
+  question: string;
+  selected_answer: string;
+  correct_answer: string;
+  is_correct: boolean;
+  topic: string;
+}
+
+export interface ReportResponse {
+  overall_score: number;
+  topic_scores: { [topic: string]: number };
+  weak_areas: string[];
+  recommendations: string[];
+  common_mistakes: string[];
+  unwatched_topics: string[];
+  report_data: any;
+}
+
+export interface SyllabusState {
+  topics: SyllabusTopic[];
+  syllabusVideos: SyllabusVideoMapping[];
+  isUploading: boolean;
+  isProcessing: boolean;
+  error: string | null;
+  totalTopics: number;
+  totalVideos: number;
+}
+
+export interface QuizState {
+  questions: QuizQuestion[];
+  currentQuestionIndex: number;
+  userAnswers: { [questionIndex: number]: string };
+  isGenerating: boolean;
+  isCompleted: boolean;
+  score: number;
+  error: string | null;
+  totalQuestions: number;
+  topicsCovered: string[];
+  source?: string; // "api", "offline", "fallback"
+  difficulty?: string; // "easy", "medium", "hard"
+  questionTypes?: string[]; // ["mcq", "true_false", etc.]
+  subject?: string; // Subject name for organization
+}
+
+export interface ReportState {
+  report: ReportResponse | null;
+  isGenerating: boolean;
+  error: string | null;
+}
+
+// Study module interfaces
+export interface Subject {
+  code: string;
+  name: string;
+  units: string[];
+}
+
+export interface Unit {
+  unit: string;
+  topics: string[];
+}
+
+export interface StudyMaterial {
+  articles: Array<{
+    title: string;
+    url: string;
+    description: string;
+    source: string;
+  }>;
+  videos: Array<{
+    title: string;
+    url: string;
+    description: string;
+    source: string;
+  }>;
+  notes: Array<{
+    title: string;
+    url: string;
+    description: string;
+    source: string;
+  }>;
+}
+
+export interface StudyQuizQuestion {
+  id: number;
+  question: string;
+  options: string[];
+  correct_answer: string;
+  concept: string;
+  question_type: string;
+  difficulty: string;
+}
+
+export interface StudyMistake {
+  concept: string;
+  correct_answer: string;
+  user_answer: string;
+  study_resources: Array<{
+    title: string;
+    url: string;
+    type: string;
+    description: string;
+  }>;
+}
+
+export interface StudyState {
+  subjects: Subject[];
+  selectedSubject: string;
+  selectedUnits: string[];
+  units: Unit[];
+  studyMaterials: Record<string, StudyMaterial>;
+  quizQuestions: StudyQuizQuestion[];
+  currentQuestionIndex: number;
+  userAnswers: Record<number, string>;
+  quizCompleted: boolean;
+  evaluationResult: any;
+  reportGenerated: boolean;
+  loadingSubjects: boolean;
+  loadingUnits: boolean;
+  loadingMaterials: boolean;
+  loadingQuiz: boolean;
+  loadingEvaluation: boolean;
+  loadingReport: boolean;
+  activeStep: number;
+  activeTab: 'materials' | 'quiz' | 'report';
+}
+
 export type SortOption = 'relevance' | 'views' | 'likes' | 'date' | 'duration';
 
 export type DurationFilter = 'all' | 'short' | 'medium' | 'long'; // <4min, 4-20min, >20min
@@ -92,7 +254,7 @@ export interface FilterState {
 
 export type Theme = 'light' | 'dark' | 'system';
 
-export type TabType = 'overview' | 'transcription' | 'summary' | 'comments' | 'learning';
+export type TabType = 'overview' | 'transcription' | 'summary' | 'comments' | 'learning' | 'syllabus' | 'quiz' | 'report' | 'offline' | 'study';
 
 export interface VideoStore {
   keyword: string;
@@ -106,6 +268,9 @@ export interface VideoStore {
   filterState: FilterState;
   transcriptionState: TranscriptionState;
   learningModeState: LearningModeState;
+  syllabusState: SyllabusState;
+  quizState: QuizState;
+  reportState: ReportState;
   theme: Theme;
   activeTab: TabType;
   setKeyword: (keyword: string) => void;
@@ -131,4 +296,26 @@ export interface VideoStore {
   toggleAnswer: () => void;
   rateCard: (rating: 'known' | 'difficult') => void;
   resetLearningMode: () => void;
+  // Syllabus methods
+  uploadSyllabus: (file?: File, textContent?: string) => Promise<void>;
+  getVideosBySyllabus: (topics: SyllabusTopic[]) => Promise<void>;
+  generateQuiz: (topics: string[], numQuestions?: number, difficulty?: string, questionTypes?: string[], subject?: string) => Promise<void>;
+  submitQuizAnswer: (questionIndex: number, answer: string) => void;
+  nextQuestion: () => void;
+  previousQuestion: () => void;
+  completeQuiz: () => void;
+  generateReport: (quizAttempts: QuizAttempt[], watchedVideos: string[], syllabusTopics: SyllabusTopic[]) => Promise<void>;
+  resetSyllabus: () => void;
+  resetQuiz: () => void;
+  resetReport: () => void;
+  // Study module methods
+  loadSubjects: () => Promise<void>;
+  loadUnits: (subjectCode: string) => Promise<void>;
+  selectSubject: (subjectCode: string) => void;
+  selectUnits: (units: string[]) => void;
+  generateStudyMaterials: () => Promise<void>;
+  generateStudyQuiz: () => Promise<void>;
+  submitStudyQuiz: () => Promise<void>;
+  generateStudyReport: () => Promise<void>;
+  resetStudy: () => void;
 } 

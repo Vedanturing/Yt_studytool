@@ -1,0 +1,16 @@
+[
+  {
+    "id": 0,
+    "question": "What is a process in operating system?",
+    "options": [
+      "A program in execution",
+      "A file on disk",
+      "A memory location",
+      "A CPU register"
+    ],
+    "correct_answer": "A program in execution",
+    "concept": "Process Management",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  }
+]

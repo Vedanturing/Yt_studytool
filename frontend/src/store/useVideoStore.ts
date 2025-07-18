@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import axios from 'axios';
-import { VideoStore, VideoResponse, SortOption, DurationFilter, ContentTypeFilter, Theme, TabType, TranscribeResponse, SummarizeResponse, LearningModeState, LearningModeResponse } from '../types';
+import { VideoStore, VideoResponse, SortOption, DurationFilter, ContentTypeFilter, Theme, TabType, TranscribeResponse, SummarizeResponse, LearningModeState, LearningModeResponse, SyllabusTopic, QuizQuestion, QuizAttempt } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -138,6 +138,35 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
     error: null,
     video_title: '',
     video_id: '',
+  },
+  syllabusState: {
+    topics: [],
+    syllabusVideos: [],
+    isUploading: false,
+    isProcessing: false,
+    error: null,
+    totalTopics: 0,
+    totalVideos: 0,
+  },
+  quizState: {
+    questions: [],
+    currentQuestionIndex: 0,
+    userAnswers: {},
+    isGenerating: false,
+    isCompleted: false,
+    score: 0,
+    error: null,
+    totalQuestions: 0,
+    topicsCovered: [],
+    source: 'api',
+    difficulty: 'medium',
+    questionTypes: ['mcq', 'true_false'],
+    subject: 'General',
+  },
+  reportState: {
+    report: null,
+    isGenerating: false,
+    error: null,
   },
 
   setKeyword: (keyword: string) => {
@@ -621,5 +650,373 @@ export const useVideoStore = create<VideoStore>((set, get) => ({
         video_id: '',
       }
     });
+  },
+
+  // Syllabus methods
+  uploadSyllabus: async (file?: File, textContent?: string) => {
+    set({
+      syllabusState: {
+        ...get().syllabusState,
+        isUploading: true,
+        error: null,
+      }
+    });
+
+    try {
+      const formData = new FormData();
+      
+      if (file) {
+        formData.append('file', file);
+      } else if (textContent) {
+        formData.append('text_content', textContent);
+      } else {
+        throw new Error('Either file or text content must be provided');
+      }
+
+      const response = await axios.post(
+        `${API_BASE_URL}/upload_syllabus`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+          timeout: 60000, // 1 minute timeout
+        }
+      );
+
+      set({
+        syllabusState: {
+          ...get().syllabusState,
+          topics: response.data.topics,
+          totalTopics: response.data.total_topics,
+          isUploading: false,
+          error: null,
+        }
+      });
+    } catch (error) {
+      console.error('Error uploading syllabus:', error);
+      let errorMessage = 'Failed to upload syllabus. Please try again.';
+      
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message;
+      }
+
+      set({
+        syllabusState: {
+          ...get().syllabusState,
+          isUploading: false,
+          error: errorMessage,
+        }
+      });
+    }
+  },
+
+  getVideosBySyllabus: async (topics: SyllabusTopic[]) => {
+    set({
+      syllabusState: {
+        ...get().syllabusState,
+        isProcessing: true,
+        error: null,
+      }
+    });
+
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/videos_by_syllabus`,
+        { topics },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: 120000, // 2 minute timeout
+        }
+      );
+
+      set({
+        syllabusState: {
+          ...get().syllabusState,
+          syllabusVideos: response.data.syllabus_mapping,
+          totalVideos: response.data.total_videos,
+          isProcessing: false,
+          error: null,
+        }
+      });
+    } catch (error) {
+      console.error('Error getting videos by syllabus:', error);
+      let errorMessage = 'Failed to get videos for syllabus. Please try again.';
+      
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message;
+      }
+
+      set({
+        syllabusState: {
+          ...get().syllabusState,
+          isProcessing: false,
+          error: errorMessage,
+        }
+      });
+    }
+  },
+
+  generateQuiz: async (topics: string[], numQuestions: number = 10, difficulty: string = 'medium', questionTypes: string[] = ['mcq', 'true_false'], subject: string = 'General') => {
+    set({
+      quizState: {
+        ...get().quizState,
+        isGenerating: true,
+        error: null,
+      }
+    });
+
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/generate_quiz`,
+        {
+          topics,
+          num_questions: numQuestions,
+          question_types: questionTypes,
+          difficulty,
+          subject
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: 60000, // 1 minute timeout
+        }
+      );
+
+      set({
+        quizState: {
+          questions: response.data.questions,
+          currentQuestionIndex: 0,
+          userAnswers: {},
+          isGenerating: false,
+          isCompleted: false,
+          score: 0,
+          error: null,
+          totalQuestions: response.data.total_questions,
+          topicsCovered: response.data.topics_covered,
+          source: response.data.source || 'api',
+          difficulty: response.data.difficulty || 'medium',
+          questionTypes: response.data.question_types || questionTypes,
+          subject: response.data.subject || subject,
+        }
+      });
+    } catch (error) {
+      console.error('Error generating quiz:', error);
+      let errorMessage = 'Failed to generate quiz. Please try again.';
+      
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message;
+      }
+
+      set({
+        quizState: {
+          ...get().quizState,
+          isGenerating: false,
+          error: errorMessage,
+        }
+      });
+    }
+  },
+
+  submitQuizAnswer: (questionIndex: number, answer: string) => {
+    const { quizState } = get();
+    set({
+      quizState: {
+        ...quizState,
+        userAnswers: {
+          ...quizState.userAnswers,
+          [questionIndex]: answer,
+        }
+      }
+    });
+  },
+
+  nextQuestion: () => {
+    const { quizState } = get();
+    if (quizState.currentQuestionIndex < quizState.questions.length - 1) {
+      set({
+        quizState: {
+          ...quizState,
+          currentQuestionIndex: quizState.currentQuestionIndex + 1,
+        }
+      });
+    }
+  },
+
+  previousQuestion: () => {
+    const { quizState } = get();
+    if (quizState.currentQuestionIndex > 0) {
+      set({
+        quizState: {
+          ...quizState,
+          currentQuestionIndex: quizState.currentQuestionIndex - 1,
+        }
+      });
+    }
+  },
+
+  completeQuiz: () => {
+    const { quizState } = get();
+    const questions = quizState.questions;
+    const userAnswers = quizState.userAnswers;
+    
+    let correctAnswers = 0;
+    const totalQuestions = questions.length;
+    
+    questions.forEach((question, index) => {
+      const userAnswer = userAnswers[index];
+      if (userAnswer && userAnswer === question.answer) {
+        correctAnswers++;
+      }
+    });
+    
+    const score = totalQuestions > 0 ? (correctAnswers / totalQuestions) * 100 : 0;
+    
+    set({
+      quizState: {
+        ...quizState,
+        isCompleted: true,
+        score,
+      }
+    });
+  },
+
+  generateReport: async (quizAttempts: QuizAttempt[], watchedVideos: string[], syllabusTopics: SyllabusTopic[]) => {
+    set({
+      reportState: {
+        ...get().reportState,
+        isGenerating: true,
+        error: null,
+      }
+    });
+
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/generate_report`,
+        {
+          quiz_attempts: quizAttempts,
+          watched_videos: watchedVideos,
+          syllabus_topics: syllabusTopics,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: 60000, // 1 minute timeout
+        }
+      );
+
+      set({
+        reportState: {
+          report: response.data,
+          isGenerating: false,
+          error: null,
+        }
+      });
+    } catch (error) {
+      console.error('Error generating report:', error);
+      let errorMessage = 'Failed to generate report. Please try again.';
+      
+      if (axios.isAxiosError(error)) {
+        errorMessage = error.response?.data?.detail || error.message;
+      }
+
+      set({
+        reportState: {
+          ...get().reportState,
+          isGenerating: false,
+          error: errorMessage,
+        }
+      });
+    }
+  },
+
+  resetSyllabus: () => {
+    set({
+      syllabusState: {
+        topics: [],
+        syllabusVideos: [],
+        isUploading: false,
+        isProcessing: false,
+        error: null,
+        totalTopics: 0,
+        totalVideos: 0,
+      }
+    });
+  },
+
+  resetQuiz: () => {
+    set({
+      quizState: {
+        questions: [],
+        currentQuestionIndex: 0,
+        userAnswers: {},
+        isGenerating: false,
+        isCompleted: false,
+        score: 0,
+        error: null,
+        totalQuestions: 0,
+        topicsCovered: [],
+      }
+    });
+  },
+
+  resetReport: () => {
+    set({
+      reportState: {
+        report: null,
+        isGenerating: false,
+        error: null,
+      }
+    });
+  },
+
+  // Study module methods
+  loadSubjects: async () => {
+    // This method will be implemented when we add study state to the store
+    console.log('loadSubjects method called');
+  },
+
+  loadUnits: async (subjectCode: string) => {
+    // This method will be implemented when we add study state to the store
+    console.log('loadUnits method called with:', subjectCode);
+  },
+
+  selectSubject: (subjectCode: string) => {
+    // This method will be implemented when we add study state to the store
+    console.log('selectSubject method called with:', subjectCode);
+  },
+
+  selectUnits: (units: string[]) => {
+    // This method will be implemented when we add study state to the store
+    console.log('selectUnits method called with:', units);
+  },
+
+  generateStudyMaterials: async () => {
+    // This method will be implemented when we add study state to the store
+    console.log('generateStudyMaterials method called');
+  },
+
+  generateStudyQuiz: async () => {
+    // This method will be implemented when we add study state to the store
+    console.log('generateStudyQuiz method called');
+  },
+
+  submitStudyQuiz: async () => {
+    // This method will be implemented when we add study state to the store
+    console.log('submitStudyQuiz method called');
+  },
+
+  generateStudyReport: async () => {
+    // This method will be implemented when we add study state to the store
+    console.log('generateStudyReport method called');
+  },
+
+  resetStudy: () => {
+    // This method will be implemented when we add study state to the store
+    console.log('resetStudy method called');
   },
 })); 

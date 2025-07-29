@@ -89,13 +89,26 @@ except ImportError:
 app = FastAPI(title="YouTube Video Search API", version="1.0.0")
 
 # Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+try:
+    from cors_config import get_fastapi_cors_config
+    cors_config = get_fastapi_cors_config()
+    app.add_middleware(CORSMiddleware, **cors_config)
+    print("✅ FastAPI CORS configured with flexible origins")
+except ImportError:
+    # Fallback to basic CORS configuration
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000", 
+            "http://127.0.0.1:3000",
+            "http://localhost:3001", 
+            "http://127.0.0.1:3001"
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    print("⚠️  FastAPI using fallback CORS configuration")
 
 # Include study routes if available
 if STUDY_ROUTES_AVAILABLE and study_router is not None:
@@ -2631,6 +2644,34 @@ async def get_study_materials_endpoint(subject: str, topic: str):
 # Initialize storage on startup
 ensure_storage_directories()
 
-if __name__ == "__main__":
+def run_server(port: int):
+    """Run the FastAPI server on a specific port"""
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    print(f"🚀 Starting FastAPI server on port {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+if __name__ == "__main__":
+    import threading
+    import time
+    
+    print("🚀 Starting Stu-dih Backend Servers...")
+    print("📖 API Documentation: http://localhost:8000/docs or http://localhost:8001/docs")
+    print("🔗 Health Check: http://localhost:8000/health or http://localhost:8001/health")
+    print("⏹️  Press Ctrl+C to stop")
+    
+    # Start server on port 8000
+    server_8000 = threading.Thread(target=run_server, args=(8000,))
+    server_8000.daemon = True
+    server_8000.start()
+    
+    # Start server on port 8001
+    server_8001 = threading.Thread(target=run_server, args=(8001,))
+    server_8001.daemon = True
+    server_8001.start()
+    
+    try:
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🛑 Shutting down servers...") 

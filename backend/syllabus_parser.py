@@ -15,7 +15,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Path to diploma syllabus folder
-SYLLABUS_DIR = Path("diploma_syllabus")
+SYLLABUS_DIR = Path("../diploma_syllabus")
 
 def parse_pdf_syllabus(file_path: Path) -> Dict[str, List[str]]:
     """Parse a PDF syllabus file and extract units and topics"""
@@ -88,16 +88,16 @@ def get_detailed_subjects() -> Dict[str, Dict]:
             "description": "Comprehensive study of operating system concepts, process management, memory management, and system architecture.",
             "units": {}
         },
-        "315321-ADVANCE COMPUTER NETWORK": {
-            "name": "Advanced Computer Network",
-            "pdf_file": "315321-ADVANCE COMPUTER NETWORK.pdf", 
-            "description": "Advanced networking concepts including OSI model, TCP/IP protocols, routing algorithms, and network security.",
-            "units": {}
-        },
         "315323-SOFTWARE ENGINEERING": {
             "name": "Software Engineering",
             "pdf_file": "315323-SOFTWARE ENGINEERING.pdf",
             "description": "Software development methodologies, system analysis, design patterns, and project management principles.",
+            "units": {}
+        },
+        "315326-DATA ANALYTICS": {
+            "name": "Data Analytics",
+            "pdf_file": "315326-DATA ANALYTICS.pdf",
+            "description": "Data analysis techniques, statistical methods, data visualization, and business intelligence concepts.",
             "units": {}
         }
     }
@@ -165,78 +165,78 @@ def get_default_units(subject_code: str) -> Dict[str, List[str]]:
                 "Storage Management"
             ]
         },
-        "315321-ADVANCE COMPUTER NETWORK": {
-            "Unit 1": [
-                "Network Fundamentals",
-                "OSI Reference Model",
-                "TCP/IP Protocol Suite",
-                "Network Topologies and Architecture",
-                "Network Standards and Organizations"
-            ],
-            "Unit 2": [
-                "Data Link Layer",
-                "Error Detection and Correction",
-                "Flow Control Mechanisms",
-                "Medium Access Control Protocols",
-                "Data Link Layer Protocols"
-            ],
-            "Unit 3": [
-                "Network Layer",
-                "Routing Algorithms and Protocols",
-                "IP Addressing and Subnetting",
-                "Network Layer Protocols",
-                "Quality of Service (QoS)"
-            ],
-            "Unit 4": [
-                "Transport Layer",
-                "TCP Protocol and Features",
-                "UDP Protocol and Applications",
-                "Congestion Control Mechanisms",
-                "Transport Layer Security"
-            ],
-            "Unit 5": [
-                "Application Layer",
-                "HTTP and Web Protocols",
-                "DNS and Name Resolution",
-                "Email Protocols and Services",
-                "Network Security and Cryptography"
-            ]
-        },
         "315323-SOFTWARE ENGINEERING": {
             "Unit 1": [
-                "Software Engineering Introduction",
-                "Software Process Models",
+                "Introduction to Software Engineering",
                 "Software Development Life Cycle",
+                "Software Process Models",
                 "Requirements Engineering",
                 "Software Project Management"
             ],
             "Unit 2": [
-                "System Analysis",
-                "Data Flow Diagrams (DFD)",
-                "Entity Relationship Diagrams (ERD)",
-                "System Design Principles",
-                "System Architecture Design"
+                "System Analysis and Design",
+                "Object-Oriented Analysis",
+                "UML Diagrams and Modeling",
+                "Design Patterns",
+                "Software Architecture"
             ],
             "Unit 3": [
-                "Object-Oriented Analysis",
-                "UML Diagrams and Notation",
-                "Class Diagrams and Relationships",
-                "Use Case Diagrams and Scenarios",
-                "Object-Oriented Design Patterns"
+                "Software Testing",
+                "Testing Strategies and Methods",
+                "Unit Testing and Integration Testing",
+                "System Testing and Validation",
+                "Test Case Design"
             ],
             "Unit 4": [
-                "Software Testing",
-                "Testing Strategies and Levels",
-                "Unit Testing and Integration Testing",
-                "System Testing and Acceptance Testing",
-                "Test Case Design and Execution"
+                "Software Quality Assurance",
+                "Quality Metrics and Standards",
+                "Code Review and Inspection",
+                "Software Maintenance",
+                "Configuration Management"
             ],
             "Unit 5": [
-                "Software Maintenance",
-                "Software Quality Assurance",
-                "Software Metrics and Measurement",
-                "Project Management and Planning",
-                "Software Configuration Management"
+                "Software Project Management",
+                "Project Planning and Estimation",
+                "Risk Management",
+                "Team Management",
+                "Software Metrics and Measurement"
+            ]
+        },
+        "315326-DATA ANALYTICS": {
+            "Unit 1": [
+                "Introduction to Data Analytics",
+                "Types of Data and Data Sources",
+                "Data Collection Methods",
+                "Data Preprocessing",
+                "Exploratory Data Analysis"
+            ],
+            "Unit 2": [
+                "Statistical Analysis",
+                "Descriptive Statistics",
+                "Inferential Statistics",
+                "Hypothesis Testing",
+                "Correlation and Regression"
+            ],
+            "Unit 3": [
+                "Data Visualization",
+                "Visualization Principles",
+                "Charts and Graphs",
+                "Interactive Dashboards",
+                "Data Storytelling"
+            ],
+            "Unit 4": [
+                "Machine Learning Basics",
+                "Supervised Learning",
+                "Unsupervised Learning",
+                "Model Evaluation",
+                "Feature Engineering"
+            ],
+            "Unit 5": [
+                "Business Intelligence",
+                "Data Warehousing",
+                "OLAP and Data Cubes",
+                "Business Analytics",
+                "Predictive Analytics"
             ]
         }
     }
@@ -252,17 +252,17 @@ def get_subject_summary(subject_code: str) -> Dict[str, str]:
             "career": "System Administrator, OS Developer, Embedded Systems Engineer",
             "difficulty": "Intermediate to Advanced"
         },
-        "315321-ADVANCE COMPUTER NETWORK": {
-            "overview": "Learn advanced networking concepts, protocols, and network security principles for modern computer networks.",
-            "skills": "Network design, protocol analysis, routing, network security",
-            "career": "Network Engineer, Network Administrator, Security Specialist",
-            "difficulty": "Advanced"
-        },
         "315323-SOFTWARE ENGINEERING": {
-            "overview": "Develop software engineering skills including system analysis, design patterns, and project management methodologies.",
-            "skills": "System analysis, UML modeling, software testing, project management",
+            "overview": "Learn software development methodologies, system analysis, design patterns, and project management principles.",
+            "skills": "Software design, UML modeling, testing, project management",
             "career": "Software Engineer, System Analyst, Project Manager",
             "difficulty": "Intermediate"
+        },
+        "315326-DATA ANALYTICS": {
+            "overview": "Master data analysis techniques, statistical methods, data visualization, and business intelligence concepts.",
+            "skills": "Data analysis, statistics, visualization, machine learning",
+            "career": "Data Analyst, Business Intelligence Developer, Data Scientist",
+            "difficulty": "Intermediate to Advanced"
         }
     }
     

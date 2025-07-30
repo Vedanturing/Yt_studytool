@@ -97,10 +97,10 @@ def main():
             else:
                 print("❌ Invalid choice. Please enter a number between 1-6.")
                 
-        except KeyboardInterrupt:
+    except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")
             break
-        except Exception as e:
+    except Exception as e:
             print(f"❌ Error: {e}")
 
 if __name__ == "__main__":

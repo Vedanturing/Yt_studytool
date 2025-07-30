@@ -1,0 +1,62 @@
+{
+  "articles": [
+    {
+      "title": "Unit 1 - Comprehensive Guide",
+      "url": "https://example.com/unit-1",
+      "description": "Detailed study material for Unit 1",
+      "source": "StudyHub"
+    },
+    {
+      "title": "Unit 1 - Comprehensive Guide",
+      "url": "https://example.com/unit-1",
+      "description": "Detailed study material for Unit 1",
+      "source": "StudyHub"
+    },
+    {
+      "title": "Unit 1 - Comprehensive Guide",
+      "url": "https://example.com/unit-1",
+      "description": "Detailed study material for Unit 1",
+      "source": "StudyHub"
+    }
+  ],
+  "videos": [
+    {
+      "title": "Unit 1 - Video Tutorial",
+      "url": "https://youtube.com/watch?v=unit1",
+      "description": "Video explanation of Unit 1 concepts",
+      "source": "YouTube"
+    },
+    {
+      "title": "Unit 1 - Video Tutorial",
+      "url": "https://youtube.com/watch?v=unit1",
+      "description": "Video explanation of Unit 1 concepts",
+      "source": "YouTube"
+    },
+    {
+      "title": "Unit 1 - Video Tutorial",
+      "url": "https://youtube.com/watch?v=unit1",
+      "description": "Video explanation of Unit 1 concepts",
+      "source": "YouTube"
+    }
+  ],
+  "notes": [
+    {
+      "title": "Unit 1 - Quick Notes",
+      "url": "https://notes.com/unit-1",
+      "description": "Concise notes for Unit 1",
+      "source": "NotesApp"
+    },
+    {
+      "title": "Unit 1 - Quick Notes",
+      "url": "https://notes.com/unit-1",
+      "description": "Concise notes for Unit 1",
+      "source": "NotesApp"
+    },
+    {
+      "title": "Unit 1 - Quick Notes",
+      "url": "https://notes.com/unit-1",
+      "description": "Concise notes for Unit 1",
+      "source": "NotesApp"
+    }
+  ]
+}

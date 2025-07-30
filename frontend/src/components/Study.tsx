@@ -77,6 +77,7 @@ const Study: React.FC = () => {
   const [userAnswers, setUserAnswers] = useState<Record<number, string>>({});
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [evaluationResult, setEvaluationResult] = useState<any>(null);
+  const [quizId, setQuizId] = useState<string | null>(null); // New state for quizId
 
   
   // Loading states
@@ -186,6 +187,7 @@ const Study: React.FC = () => {
         question_types: ['mcq', 'true_false']
       });
       setQuizQuestions(response.data.questions);
+      setQuizId(response.data.quiz_id); // Store quiz ID
       setActiveStep(3);
       toast.success('Quiz generated successfully!');
     } catch (error) {
@@ -212,6 +214,7 @@ const Study: React.FC = () => {
     try {
       setLoadingEvaluation(true);
       const response = await axios.post(`${API_BASE_URL}/study/evaluate_quiz`, {
+        quiz_id: quizId, // Include the quizId
         subject: selectedSubject,
         unit: selectedUnits[0], // For now, evaluate first unit
         responses: userAnswers
@@ -244,7 +247,7 @@ const Study: React.FC = () => {
       toast.success('Report generated successfully!');
       
       // Download the report
-      const downloadUrl = `${API_BASE_URL}/study/download_report/${response.data.report_filename}`;
+      const downloadUrl = `${API_BASE_URL}/study/download_report/${response.data.filename}`;
       window.open(downloadUrl, '_blank');
     } catch (error) {
       console.error('Error generating report:', error);
@@ -614,13 +617,13 @@ const Study: React.FC = () => {
                 <div className="flex justify-between">
                   <span className="text-gray-600 dark:text-gray-400">Score:</span>
                   <span className="font-medium text-gray-900 dark:text-white">
-                    {evaluationResult.score.toFixed(1)}%
+                    {evaluationResult.score ? evaluationResult.score.toFixed(1) : '0.0'}%
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600 dark:text-gray-400">Correct Answers:</span>
                   <span className="font-medium text-gray-900 dark:text-white">
-                    {evaluationResult.correct_count}/{evaluationResult.total_questions}
+                    {evaluationResult.correct_answers || 0}/{evaluationResult.total_questions || 0}
                   </span>
                 </div>
               </div>
@@ -630,22 +633,30 @@ const Study: React.FC = () => {
             <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
               <h4 className="font-medium text-gray-900 dark:text-white mb-3">Areas for Improvement</h4>
               <div className="space-y-2">
-                {evaluationResult.mistakes.map((mistake: Mistake, index: number) => (
-                  <div key={index} className="p-2 bg-red-50 dark:bg-red-900/20 rounded">
-                    <div className="font-medium text-sm text-red-800 dark:text-red-200">
-                      {mistake.concept}
+                {evaluationResult.mistakes && evaluationResult.mistakes.length > 0 ? (
+                  evaluationResult.mistakes.map((mistake: Mistake, index: number) => (
+                    <div key={index} className="p-2 bg-red-50 dark:bg-red-900/20 rounded">
+                      <div className="font-medium text-sm text-red-800 dark:text-red-200">
+                        {mistake.concept}
+                      </div>
+                      <div className="text-xs text-red-600 dark:text-red-300">
+                        Your answer: {mistake.user_answer} | Correct: {mistake.correct_answer}
+                      </div>
                     </div>
-                    <div className="text-xs text-red-600 dark:text-red-300">
-                      Your answer: {mistake.user_answer} | Correct: {mistake.correct_answer}
+                  ))
+                ) : (
+                  <div className="p-2 bg-green-50 dark:bg-green-900/20 rounded">
+                    <div className="text-sm text-green-800 dark:text-green-200">
+                      Great job! No mistakes found.
                     </div>
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
 
           {/* Study Resources for Mistakes */}
-          {evaluationResult.mistakes.length > 0 && (
+          {evaluationResult.mistakes && evaluationResult.mistakes.length > 0 && (
             <div className="mt-6">
               <h4 className="font-medium text-gray-900 dark:text-white mb-3">Recommended Study Resources</h4>
               <div className="space-y-4">
@@ -655,7 +666,7 @@ const Study: React.FC = () => {
                       {mistake.concept}
                     </h5>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                      {mistake.study_resources.map((resource, resourceIndex) => (
+                      {mistake.study_resources && mistake.study_resources.map((resource, resourceIndex) => (
                         <a
                           key={resourceIndex}
                           href={resource.url}

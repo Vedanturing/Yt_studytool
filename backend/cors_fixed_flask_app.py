@@ -7,10 +7,52 @@ A Flask app with the most permissive CORS configuration for development
 import os
 import json
 import logging
+import uuid # Import the uuid module
 from datetime import datetime
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify, make_response, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
+
+# ReportLab imports for PDF generation
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image, ListFlowable, Table, TableStyle
+from reportlab.platypus.tableofcontents import TableOfContents # Correct import for TableOfContents
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib import colors # Import colors
+from reportlab.pdfgen import canvas
+
+# ReportLab Graphics imports for charts
+from reportlab.graphics.shapes import Drawing, String
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+
+import re
+
+# Custom canvas for page numbers and footer
+class _QuizReportCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        canvas.Canvas.__init__(self, *args, **kwargs)
+        self.pages = []
+
+    def showPage(self):
+        self.pages.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self.pages)
+        for page_num, page in enumerate(self.pages):
+            self.__dict__.update(page)
+            self.draw_page_footer(page_num + 1, num_pages)
+            canvas.Canvas.showPage(self)
+        canvas.Canvas.save(self)
+
+    def draw_page_footer(self, page_num, num_pages):
+        self.saveState()
+        self.setFont('Helvetica', 9)
+        self.setFillColor(colors.HexColor('#555555')) # Gray color for footer
+        self.drawString(inch, 0.75 * inch, f"Page {page_num} of {num_pages}")
+        self.restoreState()
 
 # Load environment variables
 load_dotenv()
@@ -20,6 +62,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# In-memory store for quizzes (for demonstration purposes)
+# In a production environment, you would use a proper database (e.g., SQLite, PostgreSQL)
+quiz_store = {}
 
 # Most permissive CORS configuration for development
 CORS(app, 
@@ -37,6 +83,19 @@ try:
     print("✅ Loaded subjects from syllabus parser")
 except ImportError as e:
     print(f"⚠️  Could not import syllabus parser: {e}")
+
+# Import web scraper and AI quiz generator
+try:
+    from web_scraper import StudyMaterialScraper
+    from ai_quiz_generator import AIQuizGenerator
+    from report_generator import ReportGenerator
+    scraper = StudyMaterialScraper()
+    quiz_generator = AIQuizGenerator()
+    print("✅ Loaded web scraper and AI quiz generator")
+except ImportError as e:
+    print(f"⚠️  Could not import web scraper or AI quiz generator: {e}")
+    scraper = None
+    quiz_generator = None
     # Fallback to basic subjects
     DIPLOMA_SUBJECTS = {
         "315319-OPERATING SYSTEM": {
@@ -81,6 +140,15 @@ def add_cors_headers(response):
     response.headers['Access-Control-Allow-Headers'] = '*'
     response.headers['Access-Control-Allow-Credentials'] = 'false'
     return response
+
+# Helper function to generate a URL-friendly slug
+def _generate_url_slug(text: str) -> str:
+    text = text.lower()
+    # Replace non-alphanumeric characters (except hyphens) with empty string
+    text = re.sub(r'[^a-z0-9-]', '', text)
+    # Replace spaces with hyphens
+    text = re.sub(r'\s+', '-', text)
+    return text.strip('-')
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -182,53 +250,65 @@ def generate_study_material():
             error_response = jsonify({"error": "Subject and units are required"}), 400
             return add_cors_headers(error_response[0]), error_response[1]
         
-        # Return study materials in the format expected by frontend
+        # Use web scraper to find real study materials
         study_materials = {}
-        for unit in units:
-            study_materials[unit] = {
-                "articles": [
-                    {
-                        "title": f"Comprehensive Study Guide for {unit}",
-                        "url": f"https://example.com/study/{subject}/{unit}",
-                        "description": f"Detailed study guide covering all topics in {unit}",
-                        "source": "StudyHub"
-                    },
-                    {
-                        "title": f"Key Concepts Summary for {unit}",
-                        "url": f"https://example.com/summary/{subject}/{unit}",
-                        "description": f"Quick reference guide for {unit} concepts",
-                        "source": "StudyHub"
-                    }
-                ],
-                "videos": [
-                    {
-                        "title": f"Video Lecture: {unit} Overview",
-                        "url": f"https://youtube.com/watch?v=lecture_{subject}_{unit}",
-                        "description": f"Comprehensive video lecture on {unit}",
-                        "source": "YouTube"
-                    },
-                    {
-                        "title": f"Tutorial: {unit} Practical Examples",
-                        "url": f"https://youtube.com/watch?v=tutorial_{subject}_{unit}",
-                        "description": f"Practical examples and demonstrations for {unit}",
-                        "source": "YouTube"
-                    }
-                ],
-                "notes": [
-                    {
-                        "title": f"Lecture Notes for {unit}",
-                        "url": f"https://example.com/notes/{subject}/{unit}",
-                        "description": f"Detailed lecture notes for {unit}",
-                        "source": "Course Materials"
-                    },
-                    {
-                        "title": f"Practice Problems for {unit}",
-                        "url": f"https://example.com/practice/{subject}/{unit}",
-                        "description": f"Practice problems and solutions for {unit}",
-                        "source": "Course Materials"
-                    }
-                ]
-            }
+        
+        if scraper:
+            logger.info(f"🔍 Using web scraper to find study materials for {subject}")
+            for unit in units:
+                # Get topics for this unit
+                unit_topics = []
+                if subject in DIPLOMA_SUBJECTS and unit in DIPLOMA_SUBJECTS[subject]["units"]:
+                    unit_topics = DIPLOMA_SUBJECTS[subject]["units"][unit]
+                
+                # Search for real study materials
+                materials = scraper.search_study_materials(subject, unit, unit_topics)
+                study_materials[unit] = materials
+                logger.info(f"✅ Found {len(materials.get('articles', []))} articles, {len(materials.get('videos', []))} videos, {len(materials.get('notes', []))} notes for {unit}")
+        else:
+            logger.warning("⚠️ Web scraper not available, using AI-powered fallback materials")
+            # Use AI-powered fallback materials
+            for unit in units:
+                if scraper:
+                    # Get topics for this unit
+                    unit_topics = []
+                    if subject in DIPLOMA_SUBJECTS and unit in DIPLOMA_SUBJECTS[subject]["units"]:
+                        unit_topics = DIPLOMA_SUBJECTS[subject]["units"][unit]
+                    
+                    study_materials[unit] = scraper._get_gemini_fallback_materials(subject, unit, unit_topics)
+                else:
+                    study_materials[unit] = {
+                    "articles": [
+                        {
+                            "title": f"Study Guide for {subject} - {unit}",
+                            "url": f"https://www.geeksforgeeks.org/{subject.lower().replace(' ', '-')}/",
+                            "description": f"Comprehensive study guide for {unit}",
+                            "source": "GeeksforGeeks"
+                        },
+                        {
+                            "title": f"Tutorial on {subject} - {unit}",
+                            "url": f"https://www.tutorialspoint.com/{subject.lower().replace(' ', '_')}/",
+                            "description": f"Step-by-step tutorial for {unit}",
+                            "source": "TutorialsPoint"
+                        }
+                    ],
+                    "videos": [
+                        {
+                            "title": f"Video Lecture: {subject} - {unit}",
+                            "url": f"https://www.youtube.com/results?search_query={subject}+{unit}+tutorial",
+                            "description": f"Video lecture on {unit}",
+                            "source": "YouTube"
+                        }
+                    ],
+                    "notes": [
+                        {
+                            "title": f"Lecture Notes for {subject} - {unit}",
+                            "url": f"https://www.slideshare.net/search/slideshow?q={subject}+{unit}",
+                            "description": f"Lecture notes and slides for {unit}",
+                            "source": "SlideShare"
+                        }
+                    ]
+                }
         
         response = jsonify({
             "subject": subject,
@@ -261,22 +341,56 @@ def generate_quiz():
             error_response = jsonify({"error": "Subject and units are required"}), 400
             return add_cors_headers(error_response[0]), error_response[1]
         
-        # Generate sample quiz questions
+        # Use AI to generate real quiz questions
         questions = []
-        for i in range(num_questions):
-            unit = units[i % len(units)]
-            questions.append({
-                "id": i + 1,  # Add ID field that frontend expects
-                "question": f"Sample question {i+1} for {unit}?",
-                "options": ["Option A", "Option B", "Option C", "Option D"],
-                "correct_answer": "Option A",
-                "concept": f"Concept {i+1}",
-                "question_type": "mcq",
-                "difficulty": difficulty,
-                "explanation": f"This is the explanation for question {i+1}"
-            })
         
+        if quiz_generator:
+            logger.info(f"🤖 Using AI to generate quiz questions for {subject}")
+            
+            all_topics = []
+            for unit in units:
+                if subject in DIPLOMA_SUBJECTS and unit in DIPLOMA_SUBJECTS[subject]["units"]:
+                    all_topics.extend(DIPLOMA_SUBJECTS[subject]["units"][unit])
+            
+            questions = quiz_generator.generate_quiz_questions(
+                subject=subject,
+                unit=", ".join(units),
+                topics=all_topics,
+                num_questions=num_questions,
+                difficulty=difficulty
+            )
+            
+            logger.info(f"✅ Generated {len(questions)} AI-powered questions")
+        else:
+            logger.warning("⚠️ AI quiz generator not available, using fallback questions")
+            # Fallback to basic questions (as previously implemented)
+            for i in range(num_questions):
+                unit = units[i % len(units)]
+                questions.append({
+                    "id": i + 1,
+                    "question": f"Sample question {i+1} for {unit}?",
+                    "options": ["Option A", "Option B", "Option C", "Option D"],
+                    "correct_answer": "Option A",
+                    "concept": f"Concept {i+1}",
+                    "question_type": "mcq",
+                    "difficulty": difficulty,
+                    "explanation": f"This is the explanation for question {i+1}"
+                })
+        
+        # Generate a unique quiz ID and store the quiz
+        quiz_id = str(uuid.uuid4())
+        quiz_store[quiz_id] = {
+            "subject": subject,
+            "units": units,
+            "questions": questions,
+            "total_questions": len(questions),
+            "difficulty": difficulty,
+            "timestamp": datetime.now().isoformat()
+        }
+        logger.info(f"📝 Quiz stored with ID: {quiz_id}")
+
         response = jsonify({
+            "quiz_id": quiz_id,
             "subject": subject,
             "questions": questions,
             "total_questions": len(questions),
@@ -300,23 +414,110 @@ def evaluate_quiz():
     
     try:
         data = request.get_json()
+        quiz_id = data.get('quiz_id', '')
         subject = data.get('subject', '')
         unit = data.get('unit', '')
-        responses = data.get('responses', {})
+        responses = data.get('responses', {}) # Dictionary of {question_id: user_answer}
         
-        if not subject or not unit or not responses:
-            error_response = jsonify({"error": "Subject, unit, and responses are required"}), 400
+        if not quiz_id or not subject or not unit or not responses:
+            error_response = jsonify({"error": "Quiz ID, subject, unit, and responses are required"}), 400
             return add_cors_headers(error_response[0]), error_response[1]
         
-        # Simple evaluation logic
-        correct_count = 0
-        total_questions = len(responses)
+        # Retrieve the original quiz from storage
+        stored_quiz = quiz_store.get(quiz_id)
+        if not stored_quiz:
+            error_response = jsonify({"error": "Quiz not found or expired"}), 404
+            return add_cors_headers(error_response[0]), error_response[1]
         
-        for question_id, answer in responses.items():
-            # For demo purposes, assume all answers are correct
-            correct_count += 1
+        original_questions = stored_quiz["questions"]
+        
+        correct_count = 0
+        total_questions = len(original_questions)
+        mistakes = []
+        
+        # Create a map for quick lookup of original questions by ID
+        original_questions_map = {q["id"]: q for q in original_questions}
+        
+        # Evaluate each response
+        for question_id_str, user_answer in responses.items():
+            # Convert question_id from string to int for lookup
+            question_id = int(question_id_str)
+            
+            original_question = original_questions_map.get(question_id)
+            
+            if original_question:
+                if user_answer == original_question["correct_answer"]:
+                    correct_count += 1
+                else:
+                    # Retrieve study resources for the mistake's concept
+                    # The study resources were already generated by web_scraper / Gemini fallback
+                    # when generate_study_material was called. Here, we can provide general links
+                    # or assume the frontend already has specific resources if needed.
+                    # For now, we'll use a generic approach as before, but linked to the concept.
+
+                    # The topic for study resources should be based on the concept of the incorrect question
+                    concept_for_resources = original_question.get("concept", subject)
+
+                    # Generate URL-friendly slugs
+                    concept_slug = _generate_url_slug(concept_for_resources)
+                    subject_slug = _generate_url_slug(subject)
+
+                    # Attempt to create a more direct GeeksforGeeks URL
+                    gfg_url = ""
+
+                    if subject_slug == "operating-systems" and "system calls" in concept_for_resources.lower():
+                        gfg_url = "https://www.geeksforgeeks.org/operating-systems/introduction-of-system-call/"
+                    # Add more specific mappings here if needed for other subjects/concepts
+                    elif subject_slug and concept_slug:
+                        # Try pattern: /subject-slug/concept-slug/
+                        gfg_url = f"https://www.geeksforgeeks.org/{subject_slug}/{concept_slug}/"
+                    elif concept_slug: # If no clear subject slug, just use concept slug
+                        gfg_url = f"https://www.geeksforgeeks.org/{concept_slug}/"
+                    
+                    # Fallback to search if direct URL is too generic or empty
+                    if not gfg_url or len(gfg_url.split('/')) < 5: # Basic check for valid path depth
+                        gfg_url = f"https://www.geeksforgeeks.org/search/?q={concept_for_resources.replace(' ', '+')}"
+
+                    mistake = {
+                        "concept": concept_for_resources,
+                        "correct_answer": original_question["correct_answer"],
+                        "user_answer": user_answer,
+                        "question": original_question["question"],
+                        "study_resources": [
+                            {
+                                "title": f"Study Guide: {concept_for_resources}",
+                                "url": gfg_url, # Use the dynamically generated GfG URL
+                                "type": "article",
+                                "description": f"Comprehensive guide for {concept_for_resources} on GeeksforGeeks."
+                            },
+                            {
+                                "title": f"Video Tutorial: {concept_for_resources}",
+                                "url": f"https://www.youtube.com/results?search_query={concept_for_resources.replace(' ', '+')}+tutorial",
+                                "type": "video",
+                                "description": f"Video explanation of {concept_for_resources}"
+                            },
+                            {
+                                "title": f"Practice Questions: {concept_for_resources}",
+                                "url": f"https://www.tutorialspoint.com/search/search-results?search_string={concept_for_resources.replace(' ', '+')}+practice+questions",
+                                "type": "practice",
+                                "description": f"Practice questions for {concept_for_resources}"
+                            }
+                        ]
+                    }
+                    mistakes.append(mistake)
+            else:
+                logger.warning(f"Original question with ID {question_id} not found in stored quiz.")
         
         score = (correct_count / total_questions) * 100 if total_questions > 0 else 0
+        
+        if score >= 90:
+            feedback = "Excellent work! You have a strong understanding of the material."
+        elif score >= 70:
+            feedback = "Good job! You understand most concepts, but there's room for improvement."
+        elif score >= 50:
+            feedback = "You're on the right track, but need more practice with these concepts."
+        else:
+            feedback = "Keep studying! Focus on the areas where you made mistakes."
         
         response = jsonify({
             "subject": subject,
@@ -324,13 +525,75 @@ def evaluate_quiz():
             "score": score,
             "correct_answers": correct_count,
             "total_questions": total_questions,
-            "feedback": "Good job! Keep studying to improve your score."
+            "feedback": feedback,
+            "mistakes": mistakes,
+            "original_questions": original_questions,
+            "user_answers": responses
         })
         
         return add_cors_headers(response)
         
     except Exception as e:
         logger.error(f"Error evaluating quiz: {e}")
+        error_response = jsonify({"error": str(e)}), 500
+        return add_cors_headers(error_response[0]), error_response[1]
+
+@app.route('/study/generate_report', methods=['POST', 'OPTIONS'])
+def generate_report():
+    """Generate a study report"""
+    if request.method == 'OPTIONS':
+        response = make_response()
+        return add_cors_headers(response)
+
+    try:
+        data = request.get_json()
+        subject = data.get('subject', '')
+        unit = data.get('unit', '')
+        evaluation_result = data.get('evaluation_result', {})
+        mistakes = evaluation_result.get('mistakes', []) # Ensure mistakes is always a list
+
+        if not subject or not unit or not evaluation_result:
+            error_response = jsonify({"error": "Subject, unit, and evaluation result are required"}), 400
+            return add_cors_headers(error_response[0]), error_response[1]
+
+        # Define the path for saving reports
+        reports_dir = os.path.join(os.getcwd(), 'backend', 'storage', 'reports')
+        os.makedirs(reports_dir, exist_ok=True)
+
+        # Generate the report using the ReportGenerator
+        report_generator = ReportGenerator()
+        logger.info(f"Generating report for subject: {subject}, unit: {unit}")
+        report_filename = report_generator.generate_report_pdf(subject, unit, evaluation_result, reports_dir)
+        logger.info(f"Generated report filename: {report_filename}")
+
+        response = jsonify({
+            "message": "Report generated successfully",
+            "filename": report_filename,
+            "report_url": f"/study/download_report/{report_filename}"
+        })
+        logger.info(f"Response being sent: {response.get_json()}")
+        return add_cors_headers(response)
+
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
+        error_response = jsonify({"error": str(e)}), 500
+        return add_cors_headers(error_response[0]), error_response[1]
+
+@app.route('/study/download_report/<filename>', methods=['GET', 'OPTIONS'])
+def download_report(filename):
+    """Download a generated report file"""
+    if request.method == 'OPTIONS':
+        response = make_response()
+        return add_cors_headers(response)
+
+    try:
+        reports_dir = os.path.join(os.getcwd(), 'backend', 'storage', 'reports')
+        return send_from_directory(reports_dir, filename, as_attachment=True)
+    except FileNotFoundError:
+        error_response = jsonify({"error": "Report file not found"}), 404
+        return add_cors_headers(error_response[0]), error_response[1]
+    except Exception as e:
+        logger.error(f"Error downloading report: {e}")
         error_response = jsonify({"error": str(e)}), 500
         return add_cors_headers(error_response[0]), error_response[1]
 

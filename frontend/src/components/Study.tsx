@@ -33,12 +33,17 @@ interface StudyMaterial {
     url: string;
     description: string;
     source: string;
+    duration?: number;
+    view_count?: number;
+    uploader?: string;
+    thumbnail?: string;
   }>;
   notes: Array<{
     title: string;
     url: string;
     description: string;
     source: string;
+    type?: string;
   }>;
 }
 
@@ -78,6 +83,7 @@ const Study: React.FC = () => {
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [evaluationResult, setEvaluationResult] = useState<any>(null);
   const [quizId, setQuizId] = useState<string | null>(null); // New state for quizId
+  const [quizQuestionCount, setQuizQuestionCount] = useState<number>(10); // Quiz question count selector
 
   
   // Loading states
@@ -156,16 +162,29 @@ const Study: React.FC = () => {
 
     try {
       setLoadingMaterials(true);
-      const response = await axios.post(`${API_BASE_URL}/study/generate_study_material`, {
+      // Use enhanced study material generation endpoint
+      const response = await axios.post(`${API_BASE_URL}/study/generate_enhanced_study_material`, {
         subject: selectedSubject,
         units: selectedUnits
       });
       setStudyMaterials(response.data.study_materials);
       setActiveStep(2);
-      toast.success('Study materials generated successfully!');
+      toast.success('Enhanced study materials generated successfully! 🚀');
     } catch (error) {
-      console.error('Error generating study materials:', error);
-      toast.error('Failed to generate study materials');
+      console.error('Error generating enhanced study materials:', error);
+      // Fallback to basic study material generation
+      try {
+        const fallbackResponse = await axios.post(`${API_BASE_URL}/study/generate_study_material`, {
+          subject: selectedSubject,
+          units: selectedUnits
+        });
+        setStudyMaterials(fallbackResponse.data.study_materials);
+        setActiveStep(2);
+        toast.success('Study materials generated successfully! (Basic mode)');
+      } catch (fallbackError) {
+        console.error('Error with fallback study material generation:', fallbackError);
+        toast.error('Failed to generate study materials');
+      }
     } finally {
       setLoadingMaterials(false);
     }
@@ -182,7 +201,7 @@ const Study: React.FC = () => {
       const response = await axios.post(`${API_BASE_URL}/study/generate_quiz`, {
         subject: selectedSubject,
         units: selectedUnits,
-        num_questions: 10,
+        num_questions: quizQuestionCount,
         difficulty: 'medium',
         question_types: ['mcq', 'true_false']
       });
@@ -257,6 +276,25 @@ const Study: React.FC = () => {
     }
   };
 
+    const downloadYouTubeVideo = async (videoUrl: string, videoTitle: string) => {
+    try {
+      toast.success('Starting video download... This may take a few minutes.');
+      
+      const response = await axios.post(`${API_BASE_URL}/study/download_youtube_video`, {
+        video_url: videoUrl
+      });
+      
+      if (response.data.success) {
+        toast.success(`Video "${videoTitle}" downloaded successfully!`);
+      } else {
+        toast.error('Failed to download video');
+      }
+    } catch (error) {
+      console.error('Error downloading video:', error);
+      toast.error('Failed to download video. Please try again later.');
+    }
+  };
+
   const resetStudy = () => {
     setSelectedSubject('');
     setSelectedUnits([]);
@@ -264,9 +302,9 @@ const Study: React.FC = () => {
     setStudyMaterials({});
     setQuizQuestions([]);
     setUserAnswers({});
-          setQuizCompleted(false);
-      setEvaluationResult(null);
-      setActiveStep(1);
+    setQuizCompleted(false);
+    setEvaluationResult(null);
+    setActiveStep(1);
   };
 
   const currentQuestion = quizQuestions[currentQuestionIndex];
@@ -422,6 +460,33 @@ const Study: React.FC = () => {
             </div>
           )}
 
+          {/* Quiz Question Count Selector */}
+          {selectedUnits.length > 0 && (
+            <div className="mb-4 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                📊 Number of Quiz Questions
+              </label>
+              <div className="flex gap-2">
+                {[10, 20, 35, 50].map((count) => (
+                  <button
+                    key={count}
+                    onClick={() => setQuizQuestionCount(count)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      quizQuestionCount === count
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white dark:bg-gray-600 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-500 hover:bg-gray-50 dark:hover:bg-gray-500'
+                    }`}
+                  >
+                    {count} Questions
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                Select the number of unique, syllabus-related questions you want in your quiz
+              </p>
+            </div>
+          )}
+
           {/* Action Buttons */}
           {selectedUnits.length > 0 && (
             <div className="flex gap-3">
@@ -484,16 +549,38 @@ const Study: React.FC = () => {
                       <h5 className="font-medium text-gray-900 dark:text-white mb-2">🎥 Videos</h5>
                       <div className="space-y-2">
                         {materials.videos.map((video, index) => (
-                          <a
+                          <div
                             key={index}
-                            href={video.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block p-2 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
+                            className="p-2 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
                           >
-                            <div className="font-medium text-sm text-gray-900 dark:text-white">{video.title}</div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400">{video.source}</div>
-                          </a>
+                            <div className="flex justify-between items-start">
+                              <div className="flex-1">
+                                <a
+                                  href={video.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="block"
+                                >
+                                  <div className="font-medium text-sm text-gray-900 dark:text-white">{video.title}</div>
+                                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                                    {video.source}
+                                    {video.uploader && ` • ${video.uploader}`}
+                                    {video.duration && ` • ${Math.floor(video.duration / 60)}:${(video.duration % 60).toString().padStart(2, '0')}`}
+                                    {video.view_count && ` • ${video.view_count.toLocaleString()} views`}
+                                  </div>
+                                </a>
+                              </div>
+                              {video.source === 'YouTube' && (
+                                <button
+                                  onClick={() => downloadYouTubeVideo(video.url, video.title)}
+                                  className="ml-2 px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
+                                  title="Download video"
+                                >
+                                  📥
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -511,7 +598,10 @@ const Study: React.FC = () => {
                             className="block p-2 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
                           >
                             <div className="font-medium text-sm text-gray-900 dark:text-white">{note.title}</div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400">{note.source}</div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400">
+                              {note.source}
+                              {note.type && ` • ${note.type}`}
+                            </div>
                           </a>
                         ))}
                       </div>

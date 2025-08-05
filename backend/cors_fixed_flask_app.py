@@ -322,6 +322,79 @@ def generate_study_material():
         error_response = jsonify({"error": str(e)}), 500
         return add_cors_headers(error_response[0]), error_response[1]
 
+@app.route('/study/generate_enhanced_study_material', methods=['POST', 'OPTIONS'])
+def generate_enhanced_study_material():
+    """Generate enhanced study material using yt-dlp, web scraping, and document discovery"""
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = make_response()
+        return add_cors_headers(response)
+    
+    try:
+        data = request.get_json()
+        subject = data.get('subject', '')
+        units = data.get('units', [])
+        
+        if not subject or not units:
+            error_response = jsonify({"error": "Subject and units are required"}), 400
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        # Initialize enhanced study material generator
+        try:
+            from enhanced_study_material_generator import EnhancedStudyMaterialGenerator
+            enhanced_generator = EnhancedStudyMaterialGenerator()
+            logger.info("✅ Enhanced Study Material Generator initialized for API endpoint")
+        except ImportError as e:
+            logger.error(f"❌ Failed to import Enhanced Study Material Generator: {e}")
+            error_response = jsonify({"error": "Enhanced study material generator not available"}), 500
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        # Generate enhanced study materials
+        study_materials = {}
+        
+        for unit in units:
+            try:
+                logger.info(f"🚀 Generating enhanced study materials for {subject} - {unit}")
+                
+                # Get topics for this unit
+                unit_topics = []
+                if subject in DIPLOMA_SUBJECTS and unit in DIPLOMA_SUBJECTS[subject]["units"]:
+                    unit_topics = DIPLOMA_SUBJECTS[subject]["units"][unit]
+                
+                # Generate enhanced study materials
+                materials = enhanced_generator.generate_study_materials(subject, unit, unit_topics)
+                study_materials[unit] = materials
+                
+                logger.info(f"✅ Enhanced materials generated: {len(materials.get('articles', []))} articles, {len(materials.get('videos', []))} videos, {len(materials.get('notes', []))} notes for {unit}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error generating enhanced materials for {unit}: {e}")
+                # Fallback to basic materials
+                if scraper:
+                    unit_topics = []
+                    if subject in DIPLOMA_SUBJECTS and unit in DIPLOMA_SUBJECTS[subject]["units"]:
+                        unit_topics = DIPLOMA_SUBJECTS[subject]["units"][unit]
+                    study_materials[unit] = scraper.search_study_materials(subject, unit, unit_topics)
+                else:
+                    study_materials[unit] = {
+                        "articles": [],
+                        "videos": [],
+                        "notes": []
+                    }
+        
+        response = jsonify({
+            "subject": subject,
+            "study_materials": study_materials,
+            "generator_type": "enhanced"
+        })
+        
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Error generating enhanced study material: {e}")
+        error_response = jsonify({"error": str(e)}), 500
+        return add_cors_headers(error_response[0]), error_response[1]
+
 @app.route('/study/generate_quiz', methods=['POST', 'OPTIONS'])
 def generate_quiz():
     """Generate quiz questions for selected units"""
@@ -579,6 +652,67 @@ def generate_report():
         error_response = jsonify({"error": str(e)}), 500
         return add_cors_headers(error_response[0]), error_response[1]
 
+@app.route('/study/download_youtube_video', methods=['POST', 'OPTIONS'])
+def download_youtube_video():
+    """Download a YouTube video using yt-dlp"""
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        response = make_response()
+        return add_cors_headers(response)
+    
+    try:
+        data = request.get_json()
+        video_url = data.get('video_url', '')
+        
+        if not video_url:
+            error_response = jsonify({"error": "Video URL is required"}), 400
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        # Initialize enhanced study material generator
+        try:
+            from enhanced_study_material_generator import EnhancedStudyMaterialGenerator
+            enhanced_generator = EnhancedStudyMaterialGenerator()
+        except ImportError as e:
+            logger.error(f"❌ Failed to import Enhanced Study Material Generator: {e}")
+            error_response = jsonify({"error": "Enhanced study material generator not available"}), 500
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        # Get video info first
+        video_info = enhanced_generator.get_video_info(video_url)
+        if not video_info:
+            error_response = jsonify({"error": "Could not retrieve video information"}), 400
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        # Create download directory
+        download_dir = os.path.join('storage', 'downloads', 'videos')
+        os.makedirs(download_dir, exist_ok=True)
+        
+        # Generate filename
+        safe_title = "".join(c for c in video_info['title'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        safe_title = safe_title[:50]  # Limit length
+        output_path = os.path.join(download_dir, f"{safe_title}.%(ext)s")
+        
+        # Download video
+        downloaded_path = enhanced_generator.download_youtube_video(video_url, output_path)
+        
+        if downloaded_path:
+            response = jsonify({
+                "success": True,
+                "message": "Video downloaded successfully",
+                "video_info": video_info,
+                "download_path": downloaded_path
+            })
+        else:
+            error_response = jsonify({"error": "Failed to download video"}), 500
+            return add_cors_headers(error_response[0]), error_response[1]
+        
+        return add_cors_headers(response)
+        
+    except Exception as e:
+        logger.error(f"Error downloading YouTube video: {e}")
+        error_response = jsonify({"error": str(e)}), 500
+        return add_cors_headers(error_response[0]), error_response[1]
+
 @app.route('/study/download_report/<filename>', methods=['GET', 'OPTIONS'])
 def download_report(filename):
     """Download a generated report file"""
@@ -599,10 +733,10 @@ def download_report(filename):
 
 if __name__ == '__main__':
     print("🚀 Starting CORS Fixed Flask Backend Server...")
-    print("📖 API Documentation: http://localhost:8000/health")
-    print("🔗 Health Check: http://localhost:8000/health")
-    print("📚 Study Subjects: http://localhost:8000/study/subjects")
+    print("📖 API Documentation: http://localhost:5000/health")
+    print("🔗 Health Check: http://localhost:5000/health")
+    print("📚 Study Subjects: http://localhost:5000/study/subjects")
     print("✅ CORS is fully enabled for ALL origins")
     print("⏹️  Press Ctrl+C to stop")
     
-    app.run(host='0.0.0.0', port=8000, debug=True) 
+    app.run(host='0.0.0.0', port=5000, debug=True) 

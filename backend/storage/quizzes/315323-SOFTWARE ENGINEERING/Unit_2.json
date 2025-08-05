@@ -1,0 +1,30 @@
+[
+  {
+    "id": 0,
+    "question": "What is system analysis?",
+    "options": [
+      "Understanding system requirements",
+      "Coding",
+      "Testing",
+      "Deployment"
+    ],
+    "correct_answer": "Understanding system requirements",
+    "concept": "System Analysis",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  },
+  {
+    "id": 1,
+    "question": "Which diagram shows data relationships?",
+    "options": [
+      "DFD",
+      "ER Diagram",
+      "Class Diagram",
+      "Use Case Diagram"
+    ],
+    "correct_answer": "ER Diagram",
+    "concept": "Entity Relationship Diagrams",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  }
+]

@@ -1,0 +1,66 @@
+{
+  "articles": [],
+  "videos": [
+    {
+      "title": "L-1.2: Batch Operating System | Types of Operating System",
+      "url": "https://www.youtube.com/watch?v=povNcHSasgs",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 432.0,
+      "view_count": 1845282,
+      "uploader": "Gate Smashers",
+      "thumbnail": ""
+    },
+    {
+      "title": "Computer Basics: Understanding Operating Systems",
+      "url": "https://www.youtube.com/watch?v=fkGCLIQx1MI",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 91.0,
+      "view_count": 1526583,
+      "uploader": "LearnFree",
+      "thumbnail": ""
+    },
+    {
+      "title": "L-1.1: Introduction to Operating System and its Functions with English Subtitles",
+      "url": "https://www.youtube.com/watch?v=WJ-UaAaumNA",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 1139.0,
+      "view_count": 4336464,
+      "uploader": "Gate Smashers",
+      "thumbnail": ""
+    },
+    {
+      "title": "Types of Operating Systems(Batch, Multiprogramming, Time Sharing, Multiprocessing, Real Time)",
+      "url": "https://www.youtube.com/watch?v=PY6zEUELn8s",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 1086.0,
+      "view_count": 782598,
+      "uploader": "Jenny's Lectures CS IT",
+      "thumbnail": ""
+    },
+    {
+      "title": "TYPES OF OPERATING SYSTEMS || BATCH, MULTIPROGRAMMED, MULTIPROCESSING, TIME SHARING, REAL TIME etc.",
+      "url": "https://www.youtube.com/watch?v=s-tk8el8JoU",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 938.0,
+      "view_count": 154670,
+      "uploader": "Sundeep Saradhi Kanthety",
+      "thumbnail": ""
+    },
+    {
+      "title": "Types of Operating System | Batch, Real-time, Distributed, Network, Time-sharing Operating System",
+      "url": "https://www.youtube.com/watch?v=Ij71sDmmKpc",
+      "description": "Video tutorial about OPERATING SYSTEM Types of Operating Systems tutorial",
+      "source": "YouTube",
+      "duration": 1099.0,
+      "view_count": 2236255,
+      "uploader": "Learn Coding",
+      "thumbnail": ""
+    }
+  ],
+  "notes": []
+}

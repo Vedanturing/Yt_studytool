@@ -1,0 +1,16 @@
+[
+  {
+    "id": 0,
+    "question": "What is the first phase of software development life cycle?",
+    "options": [
+      "Design",
+      "Analysis",
+      "Coding",
+      "Testing"
+    ],
+    "correct_answer": "Analysis",
+    "concept": "Software Life Cycle",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  }
+]

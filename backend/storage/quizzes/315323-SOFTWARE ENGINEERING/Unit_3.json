@@ -1,0 +1,30 @@
+[
+  {
+    "id": 0,
+    "question": "Which UML diagram shows system actors?",
+    "options": [
+      "Class Diagram",
+      "Use Case Diagram",
+      "Sequence Diagram",
+      "Activity Diagram"
+    ],
+    "correct_answer": "Use Case Diagram",
+    "concept": "UML Diagrams",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  },
+  {
+    "id": 1,
+    "question": "What is object-oriented analysis?",
+    "options": [
+      "Analyzing objects",
+      "Analyzing classes",
+      "Analyzing system using objects",
+      "Analyzing data"
+    ],
+    "correct_answer": "Analyzing system using objects",
+    "concept": "Object-Oriented Analysis",
+    "question_type": "mcq",
+    "difficulty": "medium"
+  }
+]

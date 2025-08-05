@@ -1,0 +1,20 @@
+[
+  {
+    "title": "Software Life Cycle - Study Guide",
+    "url": "https://study.com/software-life-cycle",
+    "type": "article",
+    "description": "Comprehensive guide for Software Life Cycle"
+  },
+  {
+    "title": "Software Life Cycle - Video Tutorial",
+    "url": "https://youtube.com/watch?v=softwarelifecycle",
+    "type": "video",
+    "description": "Video explanation of Software Life Cycle"
+  },
+  {
+    "title": "Software Life Cycle - Practice Questions",
+    "url": "https://practice.com/software-life-cycle",
+    "type": "practice",
+    "description": "Practice questions for Software Life Cycle"
+  }
+]

@@ -62,6 +62,15 @@ class StudyMaterialScraper:
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Gemini for study materials: {e}")
         
+        # Initialize enhanced study material generator
+        try:
+            from enhanced_study_material_generator import EnhancedStudyMaterialGenerator
+            self.enhanced_generator = EnhancedStudyMaterialGenerator()
+            logger.info("✅ Enhanced Study Material Generator initialized")
+        except ImportError as e:
+            logger.warning(f"⚠️ Enhanced Study Material Generator not available: {e}")
+            self.enhanced_generator = None
+        
     def search_study_materials(self, subject: str, unit: str, topics: List[str]) -> Dict:
         """
         Search for study materials based on subject, unit, and topics
@@ -69,6 +78,22 @@ class StudyMaterialScraper:
         """
         try:
             logger.info(f"Searching study materials for {subject} - {unit}")
+            
+            # Try enhanced study material generator first
+            if self.enhanced_generator:
+                logger.info("🚀 Using Enhanced Study Material Generator")
+                try:
+                    enhanced_materials = self.enhanced_generator.generate_study_materials(subject, unit, topics)
+                    if enhanced_materials.get("articles") or enhanced_materials.get("videos") or enhanced_materials.get("notes"):
+                        logger.info(f"✅ Enhanced generator successful: {len(enhanced_materials.get('articles', []))} articles, {len(enhanced_materials.get('videos', []))} videos, {len(enhanced_materials.get('notes', []))} notes")
+                        return enhanced_materials
+                    else:
+                        logger.warning("⚠️ Enhanced generator returned no results, falling back to basic scraping")
+                except Exception as e:
+                    logger.warning(f"⚠️ Enhanced generator failed: {e}, falling back to basic scraping")
+            
+            # Fallback to original web scraping method
+            logger.info("🔄 Using basic web scraping method")
             
             # Create search queries
             search_queries = self._generate_search_queries(subject, unit, topics)

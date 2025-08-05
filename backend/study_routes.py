@@ -301,23 +301,46 @@ async def _scrape_study_materials(subject: str, unit: str) -> Dict[str, List[Dic
 
 @router.post("/generate_quiz")
 async def generate_quiz(request: QuizRequest):
-    """Generate quiz questions for selected units"""
+    """Generate unique quiz questions for selected units"""
     try:
         quiz_questions = []
+        total_requested = request.num_questions
+        units_count = len(request.units)
         
-        for unit in request.units:
+        # Calculate questions per unit (distribute evenly)
+        questions_per_unit = total_requested // units_count
+        remaining_questions = total_requested % units_count
+        
+        logger.info(f"Generating {total_requested} questions across {units_count} units")
+        
+        for i, unit in enumerate(request.units):
+            # Calculate questions for this unit
+            unit_question_count = questions_per_unit + (1 if i < remaining_questions else 0)
+            
             # Check cache first
             cache_file = QUIZZES_DIR / request.subject / f"{unit.replace(' ', '_')}.json"
             
             if cache_file.exists():
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     cached_questions = json.load(f)
-                    quiz_questions.extend(cached_questions[:request.num_questions // len(request.units)])
-                logger.info(f"Loaded cached quiz for {unit}")
+                    # Randomly select from cached questions to ensure variety
+                    import random
+                    if len(cached_questions) >= unit_question_count:
+                        selected_questions = random.sample(cached_questions, unit_question_count)
+                    else:
+                        selected_questions = cached_questions
+                    quiz_questions.extend(selected_questions)
+                logger.info(f"Loaded {len(selected_questions)} cached questions for {unit}")
                 continue
             
             # Generate new quiz questions
-            unit_questions = await _generate_quiz_questions(request.subject, unit, request.num_questions // len(request.units), request.difficulty, request.question_types)
+            unit_questions = await _generate_quiz_questions(
+                request.subject, 
+                unit, 
+                unit_question_count, 
+                request.difficulty, 
+                request.question_types
+            )
             
             # Cache the results
             cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -326,11 +349,32 @@ async def generate_quiz(request: QuizRequest):
             
             quiz_questions.extend(unit_questions)
         
+        # Ensure uniqueness across all questions
+        unique_questions = []
+        seen_questions = set()
+        
+        for question in quiz_questions:
+            question_key = f"{question['question']}_{question['correct_answer']}"
+            if question_key not in seen_questions:
+                seen_questions.add(question_key)
+                unique_questions.append(question)
+        
+        # If we don't have enough unique questions, add more from available pool
+        if len(unique_questions) < total_requested:
+            logger.warning(f"Only {len(unique_questions)} unique questions available, requested {total_requested}")
+        
+        # Limit to requested number
+        final_questions = unique_questions[:total_requested]
+        
+        logger.info(f"Generated {len(final_questions)} unique questions for {request.subject}")
+        
         return {
             "subject": request.subject,
             "units": request.units,
-            "questions": quiz_questions,
-            "total_questions": len(quiz_questions)
+            "questions": final_questions,
+            "total_questions": len(final_questions),
+            "questions_per_unit": questions_per_unit,
+            "unique_questions": len(final_questions) == len(unique_questions)
         }
         
     except Exception as e:
@@ -338,7 +382,7 @@ async def generate_quiz(request: QuizRequest):
         raise HTTPException(status_code=500, detail=f"Failed to generate quiz: {str(e)}")
 
 async def _generate_quiz_questions(subject: str, unit: str, num_questions: int, difficulty: str, question_types: List[str]) -> List[Dict]:
-    """Generate quiz questions using AI or fallback to predefined questions"""
+    """Generate unique quiz questions using AI or fallback to predefined questions"""
     questions = []
     
     if AI_AVAILABLE:
@@ -349,10 +393,20 @@ async def _generate_quiz_questions(subject: str, unit: str, num_questions: int, 
         except Exception as e:
             logger.warning(f"AI quiz generation failed, using fallback: {e}")
     
-    # Fallback questions based on subject and unit
+    # Get comprehensive fallback questions based on subject and unit
     fallback_questions = _get_fallback_questions(subject, unit)
     
-    for i, question_data in enumerate(fallback_questions[:num_questions]):
+    # Ensure we have enough questions
+    if len(fallback_questions) < num_questions:
+        logger.warning(f"Not enough questions available for {subject} - {unit}. Available: {len(fallback_questions)}, Requested: {num_questions}")
+        # Use all available questions
+        num_questions = len(fallback_questions)
+    
+    # Randomly select questions to ensure uniqueness and variety
+    import random
+    selected_questions = random.sample(fallback_questions, num_questions)
+    
+    for i, question_data in enumerate(selected_questions):
         questions.append({
             "id": i,
             "question": question_data["question"],
@@ -363,10 +417,11 @@ async def _generate_quiz_questions(subject: str, unit: str, num_questions: int, 
             "difficulty": difficulty
         })
     
+    logger.info(f"Generated {len(questions)} unique questions for {subject} - {unit}")
     return questions
 
 def _get_fallback_questions(subject: str, unit: str) -> List[Dict]:
-    """Get fallback questions for when AI is not available"""
+    """Get comprehensive fallback questions for when AI is not available"""
     fallback_db = {
         "315319-OPERATING SYSTEM": {
             "Unit 1": [
@@ -383,6 +438,62 @@ def _get_fallback_questions(subject: str, unit: str) -> List[Dict]:
                     "correct_answer": "Web OS",
                     "concept": "OS Types",
                     "type": "mcq"
+                },
+                {
+                    "question": "What is a system call in operating systems?",
+                    "options": ["A function call", "A request to the kernel", "A hardware interrupt", "A user program"],
+                    "correct_answer": "A request to the kernel",
+                    "concept": "System Calls",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which component manages memory allocation in an OS?",
+                    "options": ["CPU Scheduler", "Memory Manager", "File Manager", "Device Manager"],
+                    "correct_answer": "Memory Manager",
+                    "concept": "OS Functions",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is the main purpose of a device driver?",
+                    "options": ["To run applications", "To manage hardware devices", "To create files", "To connect to network"],
+                    "correct_answer": "To manage hardware devices",
+                    "concept": "Device Management",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which OS type is designed for real-time applications?",
+                    "options": ["Batch OS", "Time-sharing OS", "Real-time OS", "Distributed OS"],
+                    "correct_answer": "Real-time OS",
+                    "concept": "OS Types",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is the kernel in an operating system?",
+                    "options": ["A user program", "The core component", "A device driver", "A file system"],
+                    "correct_answer": "The core component",
+                    "concept": "OS Architecture",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which OS function handles file operations?",
+                    "options": ["Process Management", "Memory Management", "File Management", "Device Management"],
+                    "correct_answer": "File Management",
+                    "concept": "OS Functions",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is multiprogramming in OS?",
+                    "options": ["Running multiple programs", "Multiple CPUs", "Multiple users", "Multiple files"],
+                    "correct_answer": "Running multiple programs",
+                    "concept": "OS Concepts",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which OS type allows multiple users to share resources?",
+                    "options": ["Batch OS", "Time-sharing OS", "Real-time OS", "Single-user OS"],
+                    "correct_answer": "Time-sharing OS",
+                    "concept": "OS Types",
+                    "type": "mcq"
                 }
             ],
             "Unit 2": [
@@ -391,6 +502,145 @@ def _get_fallback_questions(subject: str, unit: str) -> List[Dict]:
                     "options": ["A program in execution", "A file on disk", "A memory location", "A CPU register"],
                     "correct_answer": "A program in execution",
                     "concept": "Process Management",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which scheduling algorithm provides the shortest average waiting time?",
+                    "options": ["FCFS", "SJF", "Round Robin", "Priority"],
+                    "correct_answer": "SJF",
+                    "concept": "Process Scheduling",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is the state of a process when it's waiting for I/O?",
+                    "options": ["Running", "Ready", "Blocked", "Terminated"],
+                    "correct_answer": "Blocked",
+                    "concept": "Process States",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is context switching?",
+                    "options": ["Changing programs", "Saving and loading process state", "Switching users", "Changing files"],
+                    "correct_answer": "Saving and loading process state",
+                    "concept": "Process Management",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which process state means the process is ready to execute?",
+                    "options": ["New", "Ready", "Running", "Blocked"],
+                    "correct_answer": "Ready",
+                    "concept": "Process States",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is a thread in operating systems?",
+                    "options": ["A lightweight process", "A file", "A memory location", "A device"],
+                    "correct_answer": "A lightweight process",
+                    "concept": "Threading",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which scheduling algorithm is preemptive?",
+                    "options": ["FCFS", "SJF", "Round Robin", "All of the above"],
+                    "correct_answer": "Round Robin",
+                    "concept": "Process Scheduling",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is interprocess communication?",
+                    "options": ["Processes talking to each other", "File sharing", "Memory sharing", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "IPC",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is a deadlock?",
+                    "options": ["Process termination", "Resource sharing", "Processes waiting for each other", "Memory allocation"],
+                    "correct_answer": "Processes waiting for each other",
+                    "concept": "Deadlock",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which algorithm prevents deadlock?",
+                    "options": ["Banker's Algorithm", "FCFS", "SJF", "Round Robin"],
+                    "correct_answer": "Banker's Algorithm",
+                    "concept": "Deadlock Prevention",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 3": [
+                {
+                    "question": "What is virtual memory?",
+                    "options": ["Physical RAM", "Storage on hard disk", "Memory management technique", "Cache memory"],
+                    "correct_answer": "Memory management technique",
+                    "concept": "Virtual Memory",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which page replacement algorithm replaces the least recently used page?",
+                    "options": ["FIFO", "LRU", "Optimal", "Random"],
+                    "correct_answer": "LRU",
+                    "concept": "Page Replacement",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is paging in memory management?",
+                    "options": ["Dividing memory into fixed-size blocks", "Allocating memory", "Freeing memory", "Swapping memory"],
+                    "correct_answer": "Dividing memory into fixed-size blocks",
+                    "concept": "Paging",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is a page fault?",
+                    "options": ["Page corruption", "Page not in memory", "Page overflow", "Page deletion"],
+                    "correct_answer": "Page not in memory",
+                    "concept": "Page Faults",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which memory allocation technique suffers from external fragmentation?",
+                    "options": ["Paging", "Segmentation", "Fixed partitioning", "Dynamic partitioning"],
+                    "correct_answer": "Dynamic partitioning",
+                    "concept": "Memory Allocation",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 4": [
+                {
+                    "question": "What is a file system?",
+                    "options": ["A program", "A method for storing files", "A device", "A network"],
+                    "correct_answer": "A method for storing files",
+                    "concept": "File Systems",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which file system is used by Windows?",
+                    "options": ["ext4", "NTFS", "FAT32", "Both B and C"],
+                    "correct_answer": "Both B and C",
+                    "concept": "File Systems",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is a directory in file systems?",
+                    "options": ["A file", "A container for files", "A device", "A program"],
+                    "correct_answer": "A container for files",
+                    "concept": "File Organization",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 5": [
+                {
+                    "question": "What is device management in OS?",
+                    "options": ["Managing hardware devices", "Managing files", "Managing memory", "Managing processes"],
+                    "correct_answer": "Managing hardware devices",
+                    "concept": "Device Management",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which scheduling algorithm is used for disk I/O?",
+                    "options": ["FCFS", "SSTF", "SCAN", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "Disk Scheduling",
                     "type": "mcq"
                 }
             ]
@@ -403,6 +653,50 @@ def _get_fallback_questions(subject: str, unit: str) -> List[Dict]:
                     "correct_answer": "7",
                     "concept": "OSI Model",
                     "type": "mcq"
+                },
+                {
+                    "question": "Which layer of OSI model handles routing?",
+                    "options": ["Data Link", "Network", "Transport", "Application"],
+                    "correct_answer": "Network",
+                    "concept": "OSI Model",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is the main protocol of the Internet?",
+                    "options": ["HTTP", "FTP", "TCP/IP", "SMTP"],
+                    "correct_answer": "TCP/IP",
+                    "concept": "TCP/IP Protocol",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which network topology is most reliable?",
+                    "options": ["Bus", "Star", "Ring", "Mesh"],
+                    "correct_answer": "Mesh",
+                    "concept": "Network Topologies",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is a LAN?",
+                    "options": ["Local Area Network", "Large Area Network", "Long Area Network", "Limited Area Network"],
+                    "correct_answer": "Local Area Network",
+                    "concept": "Network Types",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 2": [
+                {
+                    "question": "What is error detection in data link layer?",
+                    "options": ["Finding errors", "Correcting errors", "Preventing errors", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "Error Detection",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which protocol provides reliable data transfer?",
+                    "options": ["UDP", "TCP", "IP", "ARP"],
+                    "correct_answer": "TCP",
+                    "concept": "Transport Layer",
+                    "type": "mcq"
                 }
             ]
         },
@@ -413,6 +707,98 @@ def _get_fallback_questions(subject: str, unit: str) -> List[Dict]:
                     "options": ["Design", "Analysis", "Coding", "Testing"],
                     "correct_answer": "Analysis",
                     "concept": "Software Life Cycle",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which model is iterative and incremental?",
+                    "options": ["Waterfall", "Spiral", "Agile", "V-Model"],
+                    "correct_answer": "Spiral",
+                    "concept": "Software Process Models",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is requirements engineering?",
+                    "options": ["Coding", "Testing", "Gathering requirements", "Deployment"],
+                    "correct_answer": "Gathering requirements",
+                    "concept": "Requirements Engineering",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which diagram shows system processes?",
+                    "options": ["ER Diagram", "DFD", "Class Diagram", "Use Case Diagram"],
+                    "correct_answer": "DFD",
+                    "concept": "System Analysis",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is UML?",
+                    "options": ["Programming language", "Modeling language", "Database", "Operating system"],
+                    "correct_answer": "Modeling language",
+                    "concept": "UML Diagrams",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 2": [
+                {
+                    "question": "What is system analysis?",
+                    "options": ["Understanding system requirements", "Coding", "Testing", "Deployment"],
+                    "correct_answer": "Understanding system requirements",
+                    "concept": "System Analysis",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which diagram shows data relationships?",
+                    "options": ["DFD", "ER Diagram", "Class Diagram", "Use Case Diagram"],
+                    "correct_answer": "ER Diagram",
+                    "concept": "Entity Relationship Diagrams",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 3": [
+                {
+                    "question": "What is object-oriented analysis?",
+                    "options": ["Analyzing objects", "Analyzing classes", "Analyzing system using objects", "Analyzing data"],
+                    "correct_answer": "Analyzing system using objects",
+                    "concept": "Object-Oriented Analysis",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which UML diagram shows system actors?",
+                    "options": ["Class Diagram", "Use Case Diagram", "Sequence Diagram", "Activity Diagram"],
+                    "correct_answer": "Use Case Diagram",
+                    "concept": "UML Diagrams",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 4": [
+                {
+                    "question": "What is software testing?",
+                    "options": ["Finding bugs", "Fixing bugs", "Preventing bugs", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "Software Testing",
+                    "type": "mcq"
+                },
+                {
+                    "question": "Which testing is done by developers?",
+                    "options": ["Unit Testing", "Integration Testing", "System Testing", "Acceptance Testing"],
+                    "correct_answer": "Unit Testing",
+                    "concept": "Testing Strategies",
+                    "type": "mcq"
+                }
+            ],
+            "Unit 5": [
+                {
+                    "question": "What is software maintenance?",
+                    "options": ["Fixing bugs", "Adding features", "Updating software", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "Software Maintenance",
+                    "type": "mcq"
+                },
+                {
+                    "question": "What is software quality?",
+                    "options": ["Meeting requirements", "Being bug-free", "User satisfaction", "All of the above"],
+                    "correct_answer": "All of the above",
+                    "concept": "Software Quality",
                     "type": "mcq"
                 }
             ]
